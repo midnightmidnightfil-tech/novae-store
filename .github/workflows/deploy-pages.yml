@@ -32,6 +32,13 @@ jobs:
           unzip -q novae-public.zip -d dist
           test -f dist/novae-public/index.html
 
+      - name: Prepare public storefront
+        run: |
+          python scripts/prepare_site.py dist/novae-public
+          node --check dist/novae-public/assets/app.js
+          grep -q "Sélection NOVAÉ" dist/novae-public/shop.html
+          grep -q "midnightmidnightfil-tech.github.io/novae-store" dist/novae-public/sitemap.xml
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
