@@ -173,7 +173,7 @@ export default {
       return json({ error: "Service temporarily unavailable" }, 503, origin);
     }
 
-    if (!["/availability", "/shipping"].includes(url.pathname)) {
+    if (!["/availability", "/shipping", "/pricing"].includes(url.pathname)) {
       return json({ error: "Not found" }, 404, origin);
     }
 
@@ -207,15 +207,16 @@ export default {
               };
         }
 
-        if (url.pathname === "/shipping") {
-          const quantity = Math.min(5, Math.max(1, Number.parseInt(url.searchParams.get("quantity") || "1", 10) || 1));
+        const quantity = Math.min(5, Math.max(1, Number.parseInt(url.searchParams.get("quantity") || "1", 10) || 1));
+
+        async function shippingOptions() {
           const freight = await cjPost("/logistic/freightCalculate", token, {
             startCountryCode: "CN",
             endCountryCode: "CA",
             products: [{ quantity, vid: selected.vid }]
           });
 
-          const options = (Array.isArray(freight?.data) ? freight.data : [])
+          return (Array.isArray(freight?.data) ? freight.data : [])
             .map((row) => ({
               name: row?.logisticName || null,
               estimatedDays: row?.logisticAging || null,
@@ -224,13 +225,47 @@ export default {
             .filter((row) => row.name && row.priceUsd > 0)
             .sort((a, b) => a.priceUsd - b.priceUsd)
             .slice(0, 8);
+        }
 
+        if (url.pathname === "/shipping") {
+          const options = await shippingOptions();
           return {
             available: options.length > 0,
             destinationCountry: "CA",
             quantity,
             currency: "USD",
             options,
+            checkedAt: new Date().toISOString()
+          };
+        }
+
+        if (url.pathname === "/pricing") {
+          const options = await shippingOptions();
+          const cheapest = options[0] || null;
+          const supplierUsd = Number(selected.variantSellPrice || 0) || 0;
+          const fxCadPerUsd = 1.45;
+          const paymentFeeRate = 0.03;
+          const targetMarginRate = 0.35;
+
+          if (!cheapest || supplierUsd <= 0) {
+            return {
+              available: false,
+              recommendedPriceCad: null,
+              shippingMethod: cheapest?.name || null,
+              estimatedDays: cheapest?.estimatedDays || null,
+              checkedAt: new Date().toISOString()
+            };
+          }
+
+          const landedCad = (supplierUsd + cheapest.priceUsd) * fxCadPerUsd;
+          const rawPrice = landedCad / (1 - paymentFeeRate - targetMarginRate);
+          const recommendedPriceCad = Math.ceil((rawPrice + 0.10) / 5) * 5 - 0.10;
+
+          return {
+            available: true,
+            recommendedPriceCad: Number(recommendedPriceCad.toFixed(2)),
+            shippingMethod: cheapest.name,
+            estimatedDays: cheapest.estimatedDays || null,
             checkedAt: new Date().toISOString()
           };
         }
