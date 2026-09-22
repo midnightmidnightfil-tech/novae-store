@@ -78,8 +78,7 @@ async function loadLiveProductData(p){
       const data=await r.json();
       const cheapest=Array.isArray(data.options)&&data.options.length?data.options[0]:null;
       if(cheapest){
-        const usd=new Intl.NumberFormat('fr-CA',{style:'currency',currency:'USD'}).format(cheapest.priceUsd);
-        shippingBox.innerHTML=`<strong>Estimation de livraison au Canada</strong><br>Pour 1 article : dès ${usd} · ${cheapest.estimatedDays||'délai à confirmer'} jours avec ${cheapest.name}. Estimation CJ sans code postal précis; le prix et le délai finaux peuvent varier.`;
+        shippingBox.innerHTML=`<strong>Estimation de livraison au Canada</strong><br>${cheapest.estimatedDays||'Délai à confirmer'} jours avec ${cheapest.name}. Le prix affiché est calculé avec une provision de livraison standard; le montant final dépendra de l’adresse et sera confirmé au paiement.`;
       }else{
         shippingBox.innerHTML='<strong>Livraison au Canada</strong><br>Aucune estimation automatique n’est disponible pour le moment.';
       }
@@ -172,6 +171,33 @@ s = s.replace(
     "https://media.adeo.com/mkp/4f68388d54d3efe5d69b944d4608e601/media.jpg",
     "https://cf.cjdropshipping.com/quick/product/82a8d525-9fec-4fca-aa06-2639d05c9cee.jpg"
 )
+# --- Retail prices based on live CJ variant + Canada freight audits ---
+# Conservative planning model: supplier + standard Canada freight, FX buffer,
+# estimated payment fee, and target gross margin. Existing higher prices are kept.
+price_overrides = {
+    "silicone-kitchen-set": 64.90,
+    "iced-coffee-cup": 24.90,
+    "expandable-dish-rack": 29.90,
+    "wooden-lunch-box": 54.90,
+    "magnetic-cable-clips": 18.90,
+    "travel-jewelry-box": 44.90,
+    "stackable-drawer": 24.90,
+    "foldable-coffee-cup": 19.90,
+    "ceramic-tea-mug": 44.90,
+    "japanese-tableware-set": 34.90,
+    "cotton-table-mat": 21.90,
+    "fruit-drain-basket": 24.90,
+    "sink-storage-rack": 29.90,
+    "woven-storage-basket": 59.90,
+    "desktop-water-dispenser": 49.90,
+    "wall-spice-rack": 34.90,
+}
+for slug, price in price_overrides.items():
+    pattern = rf'("slug": "{re.escape(slug)}"[\s\S]*?"price": )\d+(?:\.\d+)?'
+    s, n = re.subn(pattern, rf'\g<1>{price:.2f}', s, count=1)
+    if n != 1:
+        raise RuntimeError(f"Could not update retail price for {slug}")
+
 products.write_text(s, encoding="utf-8")
 
 # --- SEO for the actual GitHub Pages URL ---
