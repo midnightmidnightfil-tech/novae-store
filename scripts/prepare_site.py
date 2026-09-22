@@ -1,4 +1,5 @@
 from pathlib import Path
+import base64
 import re
 import sys
 
@@ -429,10 +430,16 @@ s = s.replace(
     "https://cf.cjdropshipping.com/quick/product/82a8d525-9fec-4fca-aa06-2639d05c9cee.jpg"
 )
 
-# --- Missing CJ product images ---
+# --- Missing / improved product images ---
+repo_root = Path(__file__).resolve().parent.parent
+sink_b64 = repo_root / "assets" / "sink-storage-rack.b64"
+sink_out = root / "assets" / "sink-storage-rack.jpg"
+if sink_b64.exists():
+    sink_out.write_bytes(base64.b64decode(sink_b64.read_text(encoding="utf-8").strip()))
+
 image_overrides = {
     "magnetic-cable-clips": "https://cf.cjdropshipping.com/17174592/2406040438510321900.jpg",
-    "sink-storage-rack": "https://cf.cjdropshipping.com/17220384/2407270840410324200.jpg",
+    "sink-storage-rack": "https://midnightmidnightfil-tech.github.io/novae-store/assets/sink-storage-rack.jpg?v=2",
 }
 for slug, image_url in image_overrides.items():
     pattern = rf'("slug": "{re.escape(slug)}"[\s\S]*?"image": )"[^"]*"'
