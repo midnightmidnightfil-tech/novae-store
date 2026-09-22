@@ -1,0 +1,21 @@
+name: Check sink image live
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/check-sink-image.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check deployed image
+        run: |
+          set -x
+          url="https://midnightmidnightfil-tech.github.io/novae-store/assets/sink-storage-rack.jpg?v=2"
+          curl -I -L "$url" || true
+          curl -L "$url" -o sink-live.jpg || true
+          ls -lh sink-live.jpg || true
+          file sink-live.jpg || true
+          head -c 64 sink-live.jpg | xxd || true
