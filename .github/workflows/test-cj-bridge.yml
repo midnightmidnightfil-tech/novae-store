@@ -26,3 +26,11 @@ jobs:
           ! grep -q '"sku":' availability.txt
           ! grep -q '"vid":' availability.txt
           ! grep -q '"pid":' availability.txt
+
+      - name: Test Canada shipping quote
+        run: |
+          curl -sS -w "\nHTTP_STATUS:%{http_code}\n" "https://novae-cj-api.midnightmidnightfil.workers.dev/shipping?slug=silicone-kitchen-set&quantity=1" | tee shipping.txt
+          cat shipping.txt
+          grep -q 'HTTP_STATUS:200' shipping.txt
+          grep -q '"destinationCountry":"CA"' shipping.txt
+          grep -q '"options":' shipping.txt
