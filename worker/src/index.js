@@ -245,6 +245,44 @@ async function verifyStripeSession(env, sessionId) {
   };
 }
 
+
+function timingSafeEqualHex(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let out = 0;
+  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return out === 0;
+}
+
+function bytesToHex(bytes) {
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function verifyStripeWebhookSignature(rawBody, signatureHeader, secret) {
+  if (!secret || !signatureHeader) return false;
+
+  const parts = signatureHeader.split(",").map((x) => x.trim());
+  const timestamp = parts.find((x) => x.startsWith("t="))?.slice(2);
+  const signatures = parts.filter((x) => x.startsWith("v1=")).map((x) => x.slice(3));
+
+  if (!timestamp || !signatures.length) return false;
+
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > 300) return false;
+
+  const payload = `${timestamp}.${rawBody}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  const expected = bytesToHex(digest);
+
+  return signatures.some((sig) => timingSafeEqualHex(sig, expected));
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin") || "";
@@ -254,6 +292,47 @@ export default {
     }
 
     const url = new URL(request.url);
+
+    if (request.method === "POST" && url.pathname === "/stripe/webhook") {
+      try {
+        const rawBody = await request.text();
+        const signature = request.headers.get("Stripe-Signature") || "";
+        const valid = await verifyStripeWebhookSignature(
+          rawBody,
+          signature,
+          env.STRIPE_WEBHOOK_SECRET
+        );
+
+        if (!valid) {
+          return json({ error: "Invalid Stripe signature" }, 400, "", { "Cache-Control": "no-store" });
+        }
+
+        const event = JSON.parse(rawBody);
+        const session = event?.data?.object;
+
+        if (
+          event?.type === "checkout.session.completed" &&
+          session?.livemode === false &&
+          session?.payment_status === "paid"
+        ) {
+          console.log("NOVAE_TEST_PAYMENT_CONFIRMED", {
+            eventId: event.id,
+            sessionId: session.id,
+            amountTotal: session.amount_total,
+            currency: session.currency
+          });
+        }
+
+        return json({ received: true }, 200, "", { "Cache-Control": "no-store" });
+      } catch (err) {
+        return json(
+          { error: "Webhook processing failed" },
+          400,
+          "",
+          { "Cache-Control": "no-store" }
+        );
+      }
+    }
 
     if (request.method === "POST" && url.pathname === "/stripe/create-checkout-session") {
       if (!ALLOWED_ORIGINS.has(origin)) {
@@ -301,7 +380,8 @@ export default {
           ok: true,
           service: "NOVAE CJ bridge",
           secretConfigured: Boolean(env.CJ_API_KEY),
-          stripeTestConfigured: Boolean(env.STRIPE_SECRET_KEY)
+          stripeTestConfigured: Boolean(env.STRIPE_SECRET_KEY),
+          stripeWebhookConfigured: Boolean(env.STRIPE_WEBHOOK_SECRET)
         },
         200,
         origin,
