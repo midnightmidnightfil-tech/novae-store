@@ -160,11 +160,8 @@ async function cachedJson(request, origin, producer) {
 }
 
 
-async function createStripeCheckout(env, items) {
-  if (!env.STRIPE_SECRET_KEY) {
-    throw new Error("Stripe test secret is not configured");
-  }
 
+function normalizeCartItems(items) {
   const normalized = new Map();
   for (const item of Array.isArray(items) ? items : []) {
     const slug = String(item?.slug || "").trim();
@@ -173,11 +170,89 @@ async function createStripeCheckout(env, items) {
     const qty = Math.min(5, Math.max(1, Number.parseInt(item?.quantity || "1", 10) || 1));
     normalized.set(slug, Math.min(5, (normalized.get(slug) || 0) + qty));
   }
+  return [...normalized.entries()];
+}
 
-  const cart = [...normalized.entries()];
-  if (!cart.length || cart.length > 16) {
-    throw new Error("Cart is empty or invalid");
+function expectedCartAmountCadCents(cart) {
+  return cart.reduce((sum, [slug, quantity]) => {
+    const product = PRODUCTS.get(slug);
+    return sum + Math.round((product?.priceCad || 0) * 100) * quantity;
+  }, 0);
+}
+
+function orderReferenceFromRequestId(requestId) {
+  const compact = String(requestId || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 16).toUpperCase();
+  return `NVT-${compact || crypto.randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
+}
+
+function sessionIntegrity(session) {
+  const cartItems = parseStripeCartMetadata(session?.metadata?.cart);
+  const cart = cartItems.map((item) => [item.slug, item.quantity]);
+  const expectedAmount = expectedCartAmountCadCents(cart);
+  const actualAmount = Number(session?.amount_total || 0);
+  const currencyOk = String(session?.currency || "").toLowerCase() === "cad";
+  const storeOk = session?.metadata?.store === "NOVAE_TEST";
+  const amountOk = cart.length > 0 && expectedAmount === actualAmount;
+  return {
+    ok: session?.livemode === false && currencyOk && storeOk && amountOk,
+    currencyOk,
+    storeOk,
+    amountOk,
+    expectedAmount,
+    actualAmount,
+    cart
+  };
+}
+
+async function validateCjCartForCheckout(env, cart) {
+  if (!env.CJ_API_KEY) throw new Error("CJ is not configured");
+  if (!cart.length || cart.length > 5) {
+    throw new Error("Test checkout supports up to 5 unique products");
   }
+
+  const token = await getAccessToken(env.CJ_API_KEY);
+  for (const [slug, quantity] of cart) {
+    const ref = PRODUCTS.get(slug);
+    if (!ref) throw new Error("Unknown product");
+
+    const variants = await cjGet(
+      `/product/variant/query?pid=${encodeURIComponent(ref.pid)}`,
+      token
+    );
+    const rows = Array.isArray(variants?.data) ? variants.data : [];
+    const selected = rows.find((v) => v?.variantSku === ref.sku) || null;
+    if (!selected?.vid) throw new Error(`Variant unavailable: ${slug}`);
+
+    await sleep(1100);
+    const stock = await cjGet(
+      `/product/stock/queryByVid?vid=${encodeURIComponent(selected.vid)}`,
+      token
+    );
+    const summary = summarizeStock(stock);
+    if (!summary.inStock) throw new Error(`Out of stock: ${slug}`);
+    if (quantity < 1 || quantity > 5) throw new Error("Invalid quantity");
+    await sleep(1100);
+  }
+  return true;
+}
+
+async function createStripeCheckout(env, items, requestId) {
+  if (!env.STRIPE_SECRET_KEY) {
+    throw new Error("Stripe test secret is not configured");
+  }
+
+  const cart = normalizeCartItems(items);
+  if (!cart.length || cart.length > 5) {
+    throw new Error("Test cart is empty or has too many unique products");
+  }
+
+  // Preflight supplier validation before we even open Stripe.
+  await validateCjCartForCheckout(env, cart);
+
+  const safeRequestId = /^[A-Za-z0-9_-]{8,80}$/.test(String(requestId || ""))
+    ? String(requestId)
+    : crypto.randomUUID();
+  const orderRef = orderReferenceFromRequestId(safeRequestId);
 
   const params = new URLSearchParams();
   params.set("mode", "payment");
@@ -187,8 +262,11 @@ async function createStripeCheckout(env, items) {
   params.set("shipping_address_collection[allowed_countries][0]", "CA");
   params.set("phone_number_collection[enabled]", "true");
   params.set("locale", "fr-CA");
+  params.set("client_reference_id", orderRef);
   params.set("payment_intent_data[metadata][store]", "NOVAE");
+  params.set("payment_intent_data[metadata][order_ref]", orderRef);
   params.set("metadata[store]", "NOVAE_TEST");
+  params.set("metadata[order_ref]", orderRef);
   params.set("metadata[cart]", cart.map(([slug, quantity]) => `${slug}:${quantity}`).join(","));
 
   cart.forEach(([slug, quantity], index) => {
@@ -204,7 +282,8 @@ async function createStripeCheckout(env, items) {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${env.STRIPE_SECRET_KEY}`,
-      "Content-Type": "application/x-www-form-urlencoded"
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Idempotency-Key": `novae_test_${safeRequestId}`
     },
     body: params.toString()
   });
@@ -212,9 +291,8 @@ async function createStripeCheckout(env, items) {
   if (!res.ok || !data?.url) {
     throw new Error(data?.error?.message || `Stripe HTTP ${res.status}`);
   }
-  return { url: data.url, id: data.id };
+  return { url: data.url, id: data.id, orderRef };
 }
-
 
 
 function parseStripeCartMetadata(value) {
@@ -231,27 +309,36 @@ function parseStripeCartMetadata(value) {
 }
 
 async function buildCjDryRun(env, session) {
-  const cart = parseStripeCartMetadata(session?.metadata?.cart);
+  const integrity = sessionIntegrity(session);
+  const cartItems = parseStripeCartMetadata(session?.metadata?.cart);
   const shipping =
     session?.shipping_details ||
     session?.collected_information?.shipping_details ||
     null;
-  const destinationCountry =
-    shipping?.address?.country ||
-    session?.customer_details?.address?.country ||
-    null;
+  const address = shipping?.address || session?.customer_details?.address || null;
+  const destinationCountry = address?.country || null;
+  const emailReady = Boolean(session?.customer_details?.email);
+  const phoneReady = Boolean(session?.customer_details?.phone);
+  const addressReady = Boolean(
+    address?.line1 &&
+    address?.city &&
+    address?.postal_code &&
+    destinationCountry === "CA"
+  );
 
   if (
     session?.livemode !== false ||
     session?.payment_status !== "paid" ||
-    !cart.length
+    !integrity.ok
   ) {
     return {
       dryRun: true,
       readyForCJ: false,
+      integrityVerified: integrity.ok,
       destinationCountry,
-      itemCount: cart.length,
-      reason: !cart.length ? "missing_cart_metadata" : "payment_not_confirmed",
+      itemCount: cartItems.length,
+      contactReady: emailReady && phoneReady && addressReady,
+      reason: !integrity.ok ? "payment_integrity_failed" : "payment_not_confirmed",
       items: []
     };
   }
@@ -260,20 +347,23 @@ async function buildCjDryRun(env, session) {
     return {
       dryRun: true,
       readyForCJ: false,
+      integrityVerified: true,
       destinationCountry,
-      itemCount: cart.length,
+      itemCount: cartItems.length,
+      contactReady: emailReady && phoneReady && addressReady,
       reason: "cj_not_configured",
       items: []
     };
   }
 
-  // Test-mode safety: validate at most 5 unique products and never create an order.
-  if (cart.length > 5) {
+  if (!cartItems.length || cartItems.length > 5) {
     return {
       dryRun: true,
       readyForCJ: false,
+      integrityVerified: true,
       destinationCountry,
-      itemCount: cart.length,
+      itemCount: cartItems.length,
+      contactReady: emailReady && phoneReady && addressReady,
       reason: "dry_run_item_limit",
       items: []
     };
@@ -282,7 +372,7 @@ async function buildCjDryRun(env, session) {
   const token = await getAccessToken(env.CJ_API_KEY);
   const items = [];
 
-  for (const item of cart) {
+  for (const item of cartItems) {
     const ref = PRODUCTS.get(item.slug);
     if (!ref) continue;
 
@@ -323,19 +413,23 @@ async function buildCjDryRun(env, session) {
     await sleep(1100);
   }
 
+  const contactReady = emailReady && phoneReady && addressReady;
   return {
     dryRun: true,
     readyForCJ:
+      integrity.ok &&
+      contactReady &&
       destinationCountry === "CA" &&
-      items.length === cart.length &&
+      items.length === cartItems.length &&
       items.every((x) => x.variantFound && x.inStock),
+    integrityVerified: integrity.ok,
     destinationCountry,
-    itemCount: cart.length,
-    reason: null,
+    itemCount: cartItems.length,
+    contactReady,
+    reason: contactReady ? null : "missing_shipping_contact",
     items
   };
 }
-
 async function verifyStripeSession(env, sessionId) {
   if (!env.STRIPE_SECRET_KEY) {
     throw new Error("Stripe test secret is not configured");
@@ -374,12 +468,16 @@ async function verifyStripeSession(env, sessionId) {
     }
   }
 
+  const integrity = sessionIntegrity(data);
   return {
     paid,
     paymentStatus: data.payment_status || null,
     status: data.status || null,
     currency: data.currency || null,
     amountTotal: Number(data.amount_total || 0),
+    expectedAmountTotal: integrity.expectedAmount,
+    integrityVerified: integrity.ok,
+    orderRef: data.metadata?.order_ref || data.client_reference_id || null,
     testMode: data.livemode === false,
     cjDryRun
   };
@@ -423,6 +521,24 @@ async function verifyStripeWebhookSignature(rawBody, signatureHeader, secret) {
   return signatures.some((sig) => timingSafeEqualHex(sig, expected));
 }
 
+
+async function webhookEventProcessed(eventId) {
+  if (!eventId) return false;
+  const key = new Request(`https://novae.internal/stripe-events/${encodeURIComponent(eventId)}`);
+  return Boolean(await caches.default.match(key));
+}
+
+async function markWebhookEventProcessed(eventId) {
+  if (!eventId) return;
+  const key = new Request(`https://novae.internal/stripe-events/${encodeURIComponent(eventId)}`);
+  await caches.default.put(
+    key,
+    new Response("processed", {
+      headers: { "Cache-Control": "public, max-age=86400" }
+    })
+  );
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin") || "";
@@ -450,19 +566,39 @@ export default {
         const event = JSON.parse(rawBody);
         const session = event?.data?.object;
 
+        if (await webhookEventProcessed(event?.id)) {
+          return json({ received: true, duplicate: true }, 200, "", { "Cache-Control": "no-store" });
+        }
+
         if (
           event?.type === "checkout.session.completed" &&
           session?.livemode === false &&
-          session?.payment_status === "paid"
+          session?.payment_status === "paid" &&
+          session?.metadata?.store === "NOVAE_TEST"
         ) {
+          const integrity = sessionIntegrity(session);
+          if (!integrity.ok) {
+            console.error("NOVAE_TEST_PAYMENT_INTEGRITY_FAILED", {
+              eventId: event.id,
+              sessionId: session.id,
+              amountTotal: session.amount_total,
+              expectedAmount: integrity.expectedAmount
+            });
+            await markWebhookEventProcessed(event.id);
+            return json({ received: true, accepted: false }, 200, "", { "Cache-Control": "no-store" });
+          }
+
           const cjDryRun = await buildCjDryRun(env, session);
           console.log("NOVAE_TEST_PAYMENT_CONFIRMED", {
             eventId: event.id,
             sessionId: session.id,
+            orderRef: session.metadata?.order_ref || session.client_reference_id || null,
             amountTotal: session.amount_total,
             currency: session.currency,
             cjDryRun: {
               readyForCJ: cjDryRun.readyForCJ,
+              integrityVerified: cjDryRun.integrityVerified,
+              contactReady: cjDryRun.contactReady,
               destinationCountry: cjDryRun.destinationCountry,
               itemCount: cjDryRun.itemCount,
               reason: cjDryRun.reason
@@ -470,7 +606,8 @@ export default {
           });
         }
 
-        return json({ received: true }, 200, "", { "Cache-Control": "no-store" });
+        await markWebhookEventProcessed(event?.id);
+        return json({ received: true, duplicate: false }, 200, "", { "Cache-Control": "no-store" });
       } catch (err) {
         return json(
           { error: "Webhook processing failed" },
@@ -487,8 +624,8 @@ export default {
       }
       try {
         const body = await request.json();
-        const session = await createStripeCheckout(env, body?.items);
-        return json({ url: session.url }, 200, origin, { "Cache-Control": "no-store" });
+        const session = await createStripeCheckout(env, body?.items, body?.requestId);
+        return json({ url: session.url, orderRef: session.orderRef }, 200, origin, { "Cache-Control": "no-store" });
       } catch (err) {
         return json(
           { error: "Checkout unavailable", detail: String(err?.message || err) },
@@ -528,7 +665,8 @@ export default {
           service: "NOVAE CJ bridge",
           secretConfigured: Boolean(env.CJ_API_KEY),
           stripeTestConfigured: Boolean(env.STRIPE_SECRET_KEY),
-          stripeWebhookConfigured: Boolean(env.STRIPE_WEBHOOK_SECRET)
+          stripeWebhookConfigured: Boolean(env.STRIPE_WEBHOOK_SECRET),
+          fulfillmentMode: "dry-run"
         },
         200,
         origin,
