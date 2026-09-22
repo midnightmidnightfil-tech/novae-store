@@ -171,18 +171,23 @@ export default {
         return await cachedJson(request, origin, async () => {
           const token = await getAccessToken(env.CJ_API_KEY);
 
-          const [product, variants, stock] = await Promise.all([
-            cjGet(`/product/query?variantSku=${encodeURIComponent(sku)}`, token),
-            cjGet(`/product/variant/query?variantSku=${encodeURIComponent(sku)}&countryCode=CA`, token),
+          const [variants, stock] = await Promise.all([
+            cjGet(`/product/variant/query?variantSku=${encodeURIComponent(sku)}`, token),
             cjGet(`/product/stock/queryBySku?sku=${encodeURIComponent(sku)}`, token)
           ]);
 
           const variantRows = Array.isArray(variants?.data) ? variants.data : [];
+          const selected = variantRows.find((v) => v?.variantSku === sku) || variantRows[0] || null;
 
           return {
             sku,
-            productFound: Boolean(product?.result && product?.data),
-            canadaVariantCount: variantRows.length,
+            productFound: Boolean(selected),
+            variant: selected ? {
+              vid: selected.vid || null,
+              pid: selected.pid || null,
+              key: selected.variantKey || null,
+              weightG: Number(selected.variantWeight || 0) || null
+            } : null,
             stock: stockSummary(stock),
             checkedAt: new Date().toISOString()
           };
