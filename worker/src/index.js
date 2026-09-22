@@ -213,6 +213,38 @@ async function createStripeCheckout(env, items) {
   return { url: data.url, id: data.id };
 }
 
+
+async function verifyStripeSession(env, sessionId) {
+  if (!env.STRIPE_SECRET_KEY) {
+    throw new Error("Stripe test secret is not configured");
+  }
+  if (!/^cs_test_[A-Za-z0-9_]+$/.test(sessionId || "")) {
+    throw new Error("Invalid Stripe test session");
+  }
+
+  const res = await fetch(
+    `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`,
+    {
+      headers: {
+        "Authorization": `Bearer ${env.STRIPE_SECRET_KEY}`
+      }
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data?.error?.message || `Stripe HTTP ${res.status}`);
+  }
+
+  return {
+    paid: data.payment_status === "paid",
+    paymentStatus: data.payment_status || null,
+    status: data.status || null,
+    currency: data.currency || null,
+    amountTotal: Number(data.amount_total || 0),
+    testMode: data.livemode === false
+  };
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin") || "";
@@ -243,6 +275,24 @@ export default {
 
     if (request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405, origin);
+    }
+
+    if (url.pathname === "/stripe/verify-session") {
+      if (!ALLOWED_ORIGINS.has(origin)) {
+        return json({ error: "Origin not allowed" }, 403, origin);
+      }
+      try {
+        const sessionId = (url.searchParams.get("session_id") || "").trim();
+        const result = await verifyStripeSession(env, sessionId);
+        return json(result, 200, origin, { "Cache-Control": "no-store" });
+      } catch (err) {
+        return json(
+          { error: "Stripe verification failed", detail: String(err?.message || err) },
+          400,
+          origin,
+          { "Cache-Control": "no-store" }
+        );
+      }
     }
 
     if (url.pathname === "/health") {
