@@ -1,0 +1,21 @@
+name: Test Stripe checkout bridge
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/test-stripe-checkout.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Stripe secret is loaded
+        run: |
+          curl -fsS "https://novae-cj-api.midnightmidnightfil.workers.dev/health" | tee health.json
+          grep -q '"stripeTestConfigured":true' health.json
+
+      - name: Create Stripe test checkout session
+        run: |
+          curl -fsS             -H 'Origin: https://midnightmidnightfil-tech.github.io'             -H 'Content-Type: application/json'             -d '{"items":[{"slug":"silicone-kitchen-set","quantity":1}]}'             "https://novae-cj-api.midnightmidnightfil.workers.dev/stripe/create-checkout-session"             | tee checkout.json
+          grep -q '"url":"https://checkout.stripe.com/' checkout.json
