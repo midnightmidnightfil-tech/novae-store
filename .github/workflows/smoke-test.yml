@@ -1,0 +1,48 @@
+name: Smoke test NOVAE production
+
+on:
+  workflow_run:
+    workflows: ["Deploy NOVAE to GitHub Pages"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check storefront pages
+        run: |
+          set -e
+          base="https://midnightmidnightfil-tech.github.io/novae-store"
+          curl -fsS "$base/" >/dev/null
+          curl -fsS "$base/shop.html" >/dev/null
+          curl -fsS "$base/products/silicone-kitchen-set.html" >/dev/null
+
+      - name: Check deployed pricing
+        run: |
+          set -e
+          url="https://midnightmidnightfil-tech.github.io/novae-store/assets/products.js"
+          curl -fsS "$url" -o products.js
+          grep -q '"slug": "silicone-kitchen-set"' products.js
+          grep -q '"price": 64.90' products.js
+          grep -q '"slug": "woven-storage-basket"' products.js
+          grep -q '"price": 59.90' products.js
+
+      - name: Check CJ bridge privacy and health
+        run: |
+          set -e
+          api="https://novae-cj-api.midnightmidnightfil.workers.dev"
+          curl -fsS "$api/health" -o health.json
+          grep -q '"ok":true' health.json
+          grep -q '"secretConfigured":true' health.json
+
+          curl -fsS "$api/availability?slug=silicone-kitchen-set" -o availability.json
+          grep -q '"productFound":true' availability.json
+          ! grep -q '"sku":' availability.json
+          ! grep -q '"vid":' availability.json
+          ! grep -q '"pid":' availability.json
+
+          curl -fsS "$api/shipping?slug=silicone-kitchen-set&quantity=1" -o shipping.json
+          grep -q '"destinationCountry":"CA"' shipping.json
+          ! grep -q '"priceUsd":' shipping.json
