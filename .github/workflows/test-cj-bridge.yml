@@ -18,5 +18,7 @@ jobs:
 
       - name: Test NOVAE product availability
         run: |
-          curl -sS -w "\nHTTP_STATUS:%{http_code}\n" "https://novae-cj-api.midnightmidnightfil.workers.dev/availability?sku=CJYD206907601AZ" | tee availability.txt
-          cat availability.txt
+          curl -fsS "https://novae-cj-api.midnightmidnightfil.workers.dev/availability?sku=CJYD206907601AZ" | tee availability.json
+          grep -q '"productFound":true' availability.json
+          grep -q '"variant":' availability.json
+          grep -q '"stock":' availability.json
