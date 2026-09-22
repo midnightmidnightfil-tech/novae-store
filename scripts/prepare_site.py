@@ -105,9 +105,11 @@ stripe_cart_js = r'''async function startStripeTestCheckout(button){
     return p?{slug:p.slug,quantity:Math.min(5,Math.max(1,it.qty||1))}:null;
   }).filter(Boolean);
   if(!items.length)return;
+
   const oldText=button.textContent;
   button.disabled=true;
   button.textContent='Ouverture de Stripe…';
+
   try{
     const r=await fetch('https://novae-cj-api.midnightmidnightfil.workers.dev/stripe/create-checkout-session',{
       method:'POST',
@@ -116,7 +118,7 @@ stripe_cart_js = r'''async function startStripeTestCheckout(button){
     });
     const data=await r.json();
     if(!r.ok||!data.url)throw new Error(data.detail||'checkout');
-    location.href=data.url;
+    window.location.assign(data.url);
   }catch(e){
     button.disabled=false;
     button.textContent=oldText;
@@ -125,9 +127,77 @@ stripe_cart_js = r'''async function startStripeTestCheckout(button){
       msg.hidden=false;
       msg.textContent='Le paiement test est momentanément indisponible. Réessayez dans quelques instants.';
     }
+    console.error('NOVAÉ Stripe test checkout:',e);
   }
 }
-function cartPage(){const host=$('#cart-host');if(!host)return;function render(){let c=getCart();if(!c.length){host.innerHTML='<div class="empty"><h2>Votre panier est vide</h2><p>Découvrez notre sélection d’objets utiles pour la maison et le quotidien.</p><a class="btn" href="shop.html">Voir la boutique</a></div>';return}let subtotal=0;host.innerHTML=c.map(it=>{const p=PRODUCTS.find(x=>x.id===it.id);if(!p)return'';subtotal+=p.price*it.qty;return `<div class="cart-line"><div class="cart-thumb">${imgHTML(p)}</div><div><strong>${p.name}</strong><div class="product-meta">${p.category}</div></div><div><input class="qty" data-qty="${p.id}" type="number" min="1" max="5" value="${it.qty}"></div><div class="line-price">${fmt.format(p.price*it.qty)}</div><button class="icon-btn remove" data-remove="${p.id}" aria-label="Supprimer">×</button></div>`}).join('')+`<div class="cart-total"><div class="line"><span>Sous-total</span><strong>${fmt.format(subtotal)}</strong></div><div class="line"><span>Livraison</span><span>Provision incluse dans les prix; adresse confirmée dans Stripe</span></div><div class="line total"><span>Total test</span><span>${fmt.format(subtotal)}</span></div><p class="notice warning"><strong>Mode test Stripe.</strong> Aucun argent réel ne sera prélevé. Les commandes commerciales ne sont pas encore ouvertes.</p><button class="btn" id="stripe-test-checkout" style="width:100%">Paiement test Stripe</button><p id="stripe-test-message" class="notice warning" hidden></p></div>`;$('[data-qty]').forEach(i=>i.addEventListener('change',()=>{let c=getCart();const x=c.find(y=>y.id===i.dataset.qty);if(x)x.qty=Math.min(5,Math.max(1,parseInt(i.value)||1));saveCart(c);render()}));$('[data-remove]').forEach(b=>b.addEventListener('click',()=>{saveCart(getCart().filter(x=>x.id!==b.dataset.remove));render()}));$('#stripe-test-checkout')?.addEventListener('click',e=>startStripeTestCheckout(e.currentTarget))}render()}
+
+function cartPage(){
+  const host=$('#cart-host');
+  if(!host)return;
+
+  function render(){
+    const c=getCart();
+
+    if(!c.length){
+      host.innerHTML='<div class="empty"><h2>Votre panier est vide</h2><p>Découvrez notre sélection d’objets utiles pour la maison et le quotidien.</p><a class="btn" href="shop.html">Voir la boutique</a></div>';
+      return;
+    }
+
+    let subtotal=0;
+    const lines=c.map(it=>{
+      const p=PRODUCTS.find(x=>x.id===it.id);
+      if(!p)return'';
+      const qty=Math.min(5,Math.max(1,Number(it.qty)||1));
+      subtotal+=p.price*qty;
+      return `<div class="cart-line">
+        <div class="cart-thumb">${imgHTML(p)}</div>
+        <div><strong>${p.name}</strong><div class="product-meta">${p.category}</div></div>
+        <div><input class="qty" data-qty="${p.id}" type="number" min="1" max="5" value="${qty}"></div>
+        <div class="line-price">${fmt.format(p.price*qty)}</div>
+        <button type="button" class="icon-btn remove" data-remove="${p.id}" aria-label="Supprimer">×</button>
+      </div>`;
+    }).join('');
+
+    host.innerHTML=lines+`<div class="cart-total">
+      <div class="line"><span>Sous-total</span><strong>${fmt.format(subtotal)}</strong></div>
+      <div class="line"><span>Livraison</span><span>Provision incluse dans les prix; adresse confirmée dans Stripe</span></div>
+      <div class="line total"><span>Total test</span><span>${fmt.format(subtotal)}</span></div>
+      <p class="notice warning"><strong>Mode test Stripe.</strong> Aucun argent réel ne sera prélevé. Les commandes commerciales ne sont pas encore ouvertes.</p>
+      <button type="button" class="btn" id="stripe-test-checkout" style="width:100%">Paiement test Stripe</button>
+      <p id="stripe-test-message" class="notice warning" hidden></p>
+    </div>`;
+  }
+
+  host.addEventListener('click',async(e)=>{
+    const remove=e.target.closest('[data-remove]');
+    if(remove){
+      e.preventDefault();
+      saveCart(getCart().filter(x=>x.id!==remove.dataset.remove));
+      render();
+      return;
+    }
+
+    const checkoutBtn=e.target.closest('#stripe-test-checkout');
+    if(checkoutBtn){
+      e.preventDefault();
+      await startStripeTestCheckout(checkoutBtn);
+    }
+  });
+
+  host.addEventListener('change',(e)=>{
+    const input=e.target.closest('[data-qty]');
+    if(!input)return;
+    const c=getCart();
+    const x=c.find(y=>y.id===input.dataset.qty);
+    if(x){
+      x.qty=Math.min(5,Math.max(1,parseInt(input.value,10)||1));
+      saveCart(c);
+      render();
+    }
+  });
+
+  render();
+}
 function checkout()'''
 s = re.sub(
     r"function cartPage\(\)\{.*?\nfunction checkout\(\)",
