@@ -428,6 +428,18 @@ s = s.replace(
     "https://media.adeo.com/mkp/4f68388d54d3efe5d69b944d4608e601/media.jpg",
     "https://cf.cjdropshipping.com/quick/product/82a8d525-9fec-4fca-aa06-2639d05c9cee.jpg"
 )
+
+# --- Missing CJ product images ---
+image_overrides = {
+    "magnetic-cable-clips": "https://cf.cjdropshipping.com/17174592/2406040438510321900.jpg",
+    "sink-storage-rack": "https://cf.cjdropshipping.com/17220384/2407270840410324200.jpg",
+}
+for slug, image_url in image_overrides.items():
+    pattern = rf'("slug": "{re.escape(slug)}"[\s\S]*?"image": )"[^"]*"'
+    s, n = re.subn(pattern, rf'\g<1>"{image_url}"', s, count=1)
+    if n != 1:
+        raise RuntimeError(f"Could not update product image for {slug}")
+
 # --- Retail prices based on live CJ variant + Canada freight audits ---
 # Conservative planning model: supplier + standard Canada freight, FX buffer,
 # estimated payment fee, and target gross margin. Existing higher prices are kept.
