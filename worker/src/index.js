@@ -205,37 +205,53 @@ function sessionIntegrity(session) {
 }
 
 async function validateCjCartForCheckout(env, cart) {
-  if (!env.CJ_API_KEY) throw new Error("CJ is not configured");
+  if (!env.CJ_API_KEY) {
+    return { ok: false, blocking: false, reason: "cj_not_configured" };
+  }
   if (!cart.length || cart.length > 5) {
     throw new Error("Test checkout supports up to 5 unique products");
   }
 
-  const token = await getAccessToken(env.CJ_API_KEY);
-  for (const [slug, quantity] of cart) {
-    const ref = PRODUCTS.get(slug);
-    if (!ref) throw new Error("Unknown product");
+  try {
+    const token = await getAccessToken(env.CJ_API_KEY);
+    for (const [slug, quantity] of cart) {
+      const ref = PRODUCTS.get(slug);
+      if (!ref) throw new Error("Unknown product");
 
-    const variants = await cjGet(
-      `/product/variant/query?pid=${encodeURIComponent(ref.pid)}`,
-      token
-    );
-    const rows = Array.isArray(variants?.data) ? variants.data : [];
-    const selected = rows.find((v) => v?.variantSku === ref.sku) || null;
-    if (!selected?.vid) throw new Error(`Variant unavailable: ${slug}`);
+      const variants = await cjGet(
+        `/product/variant/query?pid=${encodeURIComponent(ref.pid)}`,
+        token
+      );
+      const rows = Array.isArray(variants?.data) ? variants.data : [];
+      const selected = rows.find((v) => v?.variantSku === ref.sku) || null;
+      if (!selected?.vid) {
+        return { ok: false, blocking: true, reason: "variant_unavailable", slug };
+      }
 
-    await sleep(1100);
-    const stock = await cjGet(
-      `/product/stock/queryByVid?vid=${encodeURIComponent(selected.vid)}`,
-      token
-    );
-    const summary = summarizeStock(stock);
-    if (!summary.inStock) throw new Error(`Out of stock: ${slug}`);
-    if (quantity < 1 || quantity > 5) throw new Error("Invalid quantity");
-    await sleep(1100);
+      await sleep(1100);
+      const stock = await cjGet(
+        `/product/stock/queryByVid?vid=${encodeURIComponent(selected.vid)}`,
+        token
+      );
+      const summary = summarizeStock(stock);
+      if (!summary.inStock) {
+        return { ok: false, blocking: true, reason: "out_of_stock", slug };
+      }
+      if (quantity < 1 || quantity > 5) {
+        return { ok: false, blocking: true, reason: "invalid_quantity", slug };
+      }
+      await sleep(1100);
+    }
+    return { ok: true, blocking: false, reason: null };
+  } catch (err) {
+    console.warn("NOVAE_CJ_PREFLIGHT_DEGRADED", String(err?.message || err));
+    return {
+      ok: false,
+      blocking: false,
+      reason: "supplier_check_temporarily_unavailable"
+    };
   }
-  return true;
 }
-
 async function createStripeCheckout(env, items, requestId) {
   if (!env.STRIPE_SECRET_KEY) {
     throw new Error("Stripe test secret is not configured");
@@ -247,7 +263,13 @@ async function createStripeCheckout(env, items, requestId) {
   }
 
   // Preflight supplier validation before we even open Stripe.
-  await validateCjCartForCheckout(env, cart);
+  const preflight = await validateCjCartForCheckout(env, cart);
+  if (preflight.blocking) {
+    const e = new Error(preflight.reason);
+    e.code = preflight.reason;
+    e.slug = preflight.slug || null;
+    throw e;
+  }
 
   const safeRequestId = /^[A-Za-z0-9_-]{8,80}$/.test(String(requestId || ""))
     ? String(requestId)
@@ -268,6 +290,7 @@ async function createStripeCheckout(env, items, requestId) {
   params.set("metadata[store]", "NOVAE_TEST");
   params.set("metadata[order_ref]", orderRef);
   params.set("metadata[cart]", cart.map(([slug, quantity]) => `${slug}:${quantity}`).join(","));
+  params.set("metadata[cj_preflight]", preflight.ok ? "verified" : "degraded");
 
   cart.forEach(([slug, quantity], index) => {
     const product = PRODUCTS.get(slug);
