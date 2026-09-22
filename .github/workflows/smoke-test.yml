@@ -46,12 +46,12 @@ jobs:
           grep -q '"ok":true' health.json
           grep -q '"secretConfigured":true' health.json
 
-          curl -fsS "$api/availability?slug=silicone-kitchen-set" -o availability.json
+          curl --retry 3 --retry-all-errors --retry-delay 2 -fsS "$api/availability?slug=silicone-kitchen-set" -o availability.json
           grep -q '"productFound":true' availability.json
           ! grep -q '"sku":' availability.json
           ! grep -q '"vid":' availability.json
           ! grep -q '"pid":' availability.json
 
-          curl -fsS "$api/shipping?slug=silicone-kitchen-set&quantity=1" -o shipping.json
+          curl --retry 3 --retry-all-errors --retry-delay 2 -fsS "$api/shipping?slug=silicone-kitchen-set&quantity=1" -o shipping.json
           grep -q '"destinationCountry":"CA"' shipping.json
           ! grep -q '"priceUsd":' shipping.json
