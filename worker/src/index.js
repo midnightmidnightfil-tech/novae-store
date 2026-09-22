@@ -6,42 +6,23 @@ const ALLOWED_ORIGINS = new Set([
   "http://127.0.0.1:8000"
 ]);
 
-const ALLOWED_SKUS = new Set([
-  "CJYD206907601AZ",
-  "CJYD236964001AZ",
-  "CJYD242026701AZ",
-  "CJCJ136715001AZ",
-  "CJYD197888501AZ",
-  "CJYD228090802BY",
-  "CJJT110132001AZ",
-  "CJHS115718201AZ",
-  "CJHS113613801AZ",
-  "CJCJ113478501AZ",
-  "CJCJ177046101AZ",
-  "CJYD208536601AZ",
-  "CJYD207339601AZ",
-  "CJYD204791101AZ",
-  "CJHS167415802BY",
-  "CJYD206141801AZ"
-]);
-
-const SKU_PID = new Map([
-  ["CJYD206907601AZ", "2406260541431612500"],
-  ["CJYD236964001AZ", "2505060802541627800"],
-  ["CJYD242026701AZ", "2507040555101620400"],
-  ["CJCJ136715001AZ", "1465556675883831296"],
-  ["CJYD197888501AZ", "1763402968205897728"],
-  ["CJYD228090802BY", "2501290753441625000"],
-  ["CJJT110132001AZ", "1386883997170274304"],
-  ["CJHS115718201AZ", "1400300694791131136"],
-  ["CJHS113613801AZ", "1395197760894013440"],
-  ["CJCJ113478501AZ", "1394840032447172608"],
-  ["CJCJ177046101AZ", "1664950078802505728"],
-  ["CJYD208536601AZ", "2407160828401622500"],
-  ["CJYD207339601AZ", "2407020239431617500"],
-  ["CJYD204791101AZ", "1795379973377765376"],
-  ["CJHS167415802BY", "1621032671155597312"],
-  ["CJYD206141801AZ", "2406160346461601500"]
+const PRODUCTS = new Map([
+  ["silicone-kitchen-set", { sku: "CJYD206907601AZ", pid: "2406260541431612500" }],
+  ["iced-coffee-cup", { sku: "CJYD236964001AZ", pid: "2505060802541627800" }],
+  ["expandable-dish-rack", { sku: "CJYD242026701AZ", pid: "2507040555101620400" }],
+  ["wooden-lunch-box", { sku: "CJCJ136715001AZ", pid: "1465556675883831296" }],
+  ["magnetic-cable-clips", { sku: "CJYD197888501AZ", pid: "1763402968205897728" }],
+  ["travel-jewelry-box", { sku: "CJYD228090802BY", pid: "2501290753441625000" }],
+  ["stackable-drawer", { sku: "CJJT110132001AZ", pid: "1386883997170274304" }],
+  ["foldable-coffee-cup", { sku: "CJHS115718201AZ", pid: "1400300694791131136" }],
+  ["ceramic-tea-mug", { sku: "CJHS113613801AZ", pid: "1395197760894013440" }],
+  ["japanese-tableware-set", { sku: "CJCJ113478501AZ", pid: "1394840032447172608" }],
+  ["cotton-table-mat", { sku: "CJCJ177046101AZ", pid: "1664950078802505728" }],
+  ["fruit-drain-basket", { sku: "CJYD208536601AZ", pid: "2407160828401622500" }],
+  ["sink-storage-rack", { sku: "CJYD207339601AZ", pid: "2407020239431617500" }],
+  ["woven-storage-basket", { sku: "CJYD204791101AZ", pid: "1795379973377765376" }],
+  ["desktop-water-dispenser", { sku: "CJHS167415802BY", pid: "1621032671155597312" }],
+  ["wall-spice-rack", { sku: "CJYD206141801AZ", pid: "2406160346461601500" }]
 ]);
 
 let tokenCache = { token: null, expiresAt: 0 };
@@ -109,34 +90,27 @@ async function cjGet(path, token) {
   return data;
 }
 
-function stockSummary(payload) {
-  const rows = Array.isArray(payload?.data)
-    ? payload.data
-    : Array.isArray(payload?.data?.content)
-      ? payload.data.content
-      : [];
+function summarizeStock(payload) {
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
+  const countries = [];
+  let inStock = false;
 
-  const locations = rows.map((row) => {
+  for (const row of rows) {
     const quantity = Number(
       row?.totalInventoryNum ??
       row?.storageNum ??
       row?.cjInventoryNum ??
       0
     ) || 0;
+    if (quantity > 0) {
+      inStock = true;
+      if (row?.countryCode && !countries.includes(row.countryCode)) {
+        countries.push(row.countryCode);
+      }
+    }
+  }
 
-    return {
-      countryCode: row?.countryCode || null,
-      location: row?.areaEn || null,
-      inStock: quantity > 0,
-      quantity
-    };
-  });
-
-  return {
-    inStock: locations.some((x) => x.inStock),
-    totalQuantity: locations.reduce((sum, x) => sum + x.quantity, 0),
-    locations
-  };
+  return { inStock, warehouseCountries: countries };
 }
 
 async function cachedJson(request, origin, producer) {
@@ -149,7 +123,6 @@ async function cachedJson(request, origin, producer) {
   const response = json(payload, 200, origin, {
     "Cache-Control": "public, max-age=300"
   });
-
   await cache.put(cacheKey, response.clone());
   return response;
 }
@@ -169,7 +142,11 @@ export default {
 
     if (url.pathname === "/health") {
       return json(
-        { ok: true, service: "NOVAE CJ bridge", secretConfigured: Boolean(env.CJ_API_KEY) },
+        {
+          ok: true,
+          service: "NOVAE CJ bridge",
+          secretConfigured: Boolean(env.CJ_API_KEY)
+        },
         200,
         origin,
         { "Cache-Control": "no-store" }
@@ -177,73 +154,61 @@ export default {
     }
 
     if (!env.CJ_API_KEY) {
-      return json({ error: "CJ_API_KEY secret is not configured" }, 503, origin);
+      return json({ error: "Service temporarily unavailable" }, 503, origin);
     }
 
-    const sku = (url.searchParams.get("sku") || "").trim();
-    if (!ALLOWED_SKUS.has(sku)) {
-      return json({ error: "SKU not allowed" }, 400, origin);
+    if (url.pathname !== "/availability") {
+      return json({ error: "Not found" }, 404, origin);
+    }
+
+    const slug = (url.searchParams.get("slug") || "").trim();
+    const ref = PRODUCTS.get(slug);
+    if (!ref) {
+      return json({ error: "Unknown product" }, 400, origin);
     }
 
     try {
-      if (url.pathname === "/availability") {
-        return await cachedJson(request, origin, async () => {
-          const token = await getAccessToken(env.CJ_API_KEY);
+      return await cachedJson(request, origin, async () => {
+        const token = await getAccessToken(env.CJ_API_KEY);
 
-          const pid = SKU_PID.get(sku);
-          const variants = await cjGet(
-            `/product/variant/query?pid=${encodeURIComponent(pid)}`,
-            token
-          );
+        const variants = await cjGet(
+          `/product/variant/query?pid=${encodeURIComponent(ref.pid)}`,
+          token
+        );
 
-          const variantRows = Array.isArray(variants?.data) ? variants.data : [];
-          const selected = variantRows.find((v) => v?.variantSku === sku) || null;
+        const rows = Array.isArray(variants?.data) ? variants.data : [];
+        const selected = rows.find((v) => v?.variantSku === ref.sku) || null;
 
-          if (!selected?.vid) {
-            return {
-              sku,
-              productFound: false,
-              variant: null,
-              stock: { inStock: false, totalQuantity: 0, locations: [] },
-              checkedAt: new Date().toISOString()
-            };
-          }
-
-          const stock = await cjGet(
-            `/product/stock/queryByVid?vid=${encodeURIComponent(selected.vid)}`,
-            token
-          );
-
+        if (!selected?.vid) {
           return {
-            sku,
-            productFound: true,
-            variant: {
-              vid: selected.vid,
-              pid: selected.pid || pid,
-              key: selected.variantKey || null,
-              weightG: Number(selected.variantWeight || 0) || null
-            },
-            stock: stockSummary(stock),
+            productFound: false,
+            inStock: false,
+            warehouseCountries: [],
+            variantLabel: null,
             checkedAt: new Date().toISOString()
           };
-        });
-      }
+        }
 
-      if (url.pathname === "/stock") {
-        return await cachedJson(request, origin, async () => {
-          const token = await getAccessToken(env.CJ_API_KEY);
-          const stock = await cjGet(
-            `/product/stock/queryBySku?sku=${encodeURIComponent(sku)}`,
-            token
-          );
-          return { sku, stock: stockSummary(stock), checkedAt: new Date().toISOString() };
-        });
-      }
+        const stock = await cjGet(
+          `/product/stock/queryByVid?vid=${encodeURIComponent(selected.vid)}`,
+          token
+        );
+        const summary = summarizeStock(stock);
 
-      return json({ error: "Not found" }, 404, origin);
+        return {
+          productFound: true,
+          inStock: summary.inStock,
+          warehouseCountries: summary.warehouseCountries,
+          variantLabel: selected.variantKey || null,
+          checkedAt: new Date().toISOString()
+        };
+      });
     } catch (err) {
       return json(
-        { error: "CJ request failed", detail: String(err?.message || err) },
+        {
+          error: "Availability check failed",
+          detail: String(err?.message || err)
+        },
         502,
         origin,
         { "Cache-Control": "no-store" }
