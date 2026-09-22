@@ -1,0 +1,22 @@
+name: Test NOVAE CJ bridge
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/test-cj-bridge.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test health
+        run: |
+          curl -fsS "https://novae-cj-api.midnightmidnightfil.workers.dev/health" | tee health.json
+          grep -q '"ok":true' health.json
+          grep -q '"secretConfigured":true' health.json
+
+      - name: Test NOVAE product availability
+        run: |
+          curl -sS -w "\nHTTP_STATUS:%{http_code}\n" "https://novae-cj-api.midnightmidnightfil.workers.dev/availability?sku=CJYD206907601AZ" | tee availability.txt
+          cat availability.txt
