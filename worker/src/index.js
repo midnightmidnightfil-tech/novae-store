@@ -76,34 +76,50 @@ async function getAccessToken(apiKey) {
   return tokenCache.token;
 }
 
-async function cjGet(path, token) {
-  const res = await fetch(`${CJ_BASE}${path}`, {
-    headers: {
-      "CJ-Access-Token": token,
-      "Content-Type": "application/json"
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRateLimited(res, data) {
+  const msg = String(data?.message || "");
+  return res.status === 429 || res.status === 406 || /too many requests|qps limit|request too frequent/i.test(msg);
+}
+
+async function cjRequest(path, token, init = {}) {
+  let lastMessage = "CJ request failed";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await sleep(1200 * attempt);
+    const res = await fetch(`${CJ_BASE}${path}`, {
+      ...init,
+      headers: {
+        "CJ-Access-Token": token,
+        "Content-Type": "application/json",
+        ...(init.headers || {})
+      }
+    });
+    const data = await res.json();
+    if (isRateLimited(res, data)) {
+      lastMessage = data?.message || `CJ HTTP ${res.status}`;
+      continue;
     }
-  });
-  const data = await res.json();
-  if (!res.ok || data?.result === false) {
-    throw new Error(data?.message || `CJ HTTP ${res.status}`);
+    if (!res.ok || data?.result === false) {
+      throw new Error(data?.message || `CJ HTTP ${res.status}`);
+    }
+    return data;
   }
-  return data;
+  throw new Error(lastMessage);
+}
+
+async function cjGet(path, token) {
+  return cjRequest(path, token);
 }
 
 async function cjPost(path, token, body) {
-  const res = await fetch(`${CJ_BASE}${path}`, {
+  await sleep(1100);
+  return cjRequest(path, token, {
     method: "POST",
-    headers: {
-      "CJ-Access-Token": token,
-      "Content-Type": "application/json"
-    },
     body: JSON.stringify(body)
   });
-  const data = await res.json();
-  if (!res.ok || data?.result === false) {
-    throw new Error(data?.message || `CJ HTTP ${res.status}`);
-  }
-  return data;
 }
 
 function summarizeStock(payload) {
