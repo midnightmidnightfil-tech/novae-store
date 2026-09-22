@@ -10,12 +10,57 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Check Stripe secret is loaded
+      - name: Check backend safety mode
         run: |
-          curl -fsS "https://novae-cj-api.midnightmidnightfil.workers.dev/health" | tee health.json
+          set -e
+          api="https://novae-cj-api.midnightmidnightfil.workers.dev"
+          curl -fsS "$api/health" | tee health.json
           grep -q '"stripeTestConfigured":true' health.json
+          grep -q '"stripeWebhookConfigured":true' health.json
+          grep -q '"fulfillmentMode":"dry-run"' health.json
 
-      - name: Create Stripe test checkout session
+      - name: Create idempotent Stripe test checkout
         run: |
-          curl -fsS             -H 'Origin: https://midnightmidnightfil-tech.github.io'             -H 'Content-Type: application/json'             -d '{"items":[{"slug":"silicone-kitchen-set","quantity":1}]}'             "https://novae-cj-api.midnightmidnightfil.workers.dev/stripe/create-checkout-session"             | tee checkout.json
-          grep -q '"url":"https://checkout.stripe.com/' checkout.json
+          set -e
+          api="https://novae-cj-api.midnightmidnightfil.workers.dev"
+          origin="https://midnightmidnightfil-tech.github.io"
+          request_id="ci_test_order_20260922"
+
+          payload='{"requestId":"'$request_id'","items":[{"slug":"silicone-kitchen-set","quantity":1,"price":0.01}]}'
+
+          curl -fsS -H "Origin: $origin" -H 'Content-Type: application/json'             -d "$payload" "$api/stripe/create-checkout-session" | tee checkout1.json
+
+          curl -fsS -H "Origin: $origin" -H 'Content-Type: application/json'             -d "$payload" "$api/stripe/create-checkout-session" | tee checkout2.json
+
+          url1=$(jq -r '.url' checkout1.json)
+          url2=$(jq -r '.url' checkout2.json)
+          ref1=$(jq -r '.orderRef' checkout1.json)
+          ref2=$(jq -r '.orderRef' checkout2.json)
+
+          test -n "$url1"
+          test "$url1" = "$url2"
+          test "$ref1" = "$ref2"
+          echo "$ref1" | grep -Eq '^NVT-[A-Z0-9]+$'
+
+          session_id=$(printf '%s' "$url1" | grep -oE 'cs_test_[A-Za-z0-9_]+' | head -1)
+          test -n "$session_id"
+
+          curl -fsS -H "Origin: $origin"             "$api/stripe/verify-session?session_id=$session_id" | tee verify.json
+
+          grep -q '"amountTotal":6490' verify.json
+          grep -q '"expectedAmountTotal":6490' verify.json
+          grep -q '"integrityVerified":true' verify.json
+
+      - name: Reject untrusted browser origin
+        run: |
+          set -e
+          api="https://novae-cj-api.midnightmidnightfil.workers.dev"
+          code=$(curl -sS -o blocked.json -w '%{http_code}'             -H 'Origin: https://example.invalid'             -H 'Content-Type: application/json'             -d '{"requestId":"blocked_test_12345","items":[{"slug":"silicone-kitchen-set","quantity":1}]}'             "$api/stripe/create-checkout-session")
+          test "$code" = "403"
+
+      - name: Reject unsigned webhook
+        run: |
+          set -e
+          api="https://novae-cj-api.midnightmidnightfil.workers.dev"
+          code=$(curl -sS -o webhook.json -w '%{http_code}'             -H 'Content-Type: application/json'             -d '{"type":"checkout.session.completed"}'             "$api/stripe/webhook")
+          test "$code" = "400"
