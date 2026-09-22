@@ -96,6 +96,51 @@ s = re.sub(
     flags=re.S,
 )
 
+# --- Stripe test checkout button in cart ---
+stripe_cart_js = r'''async function startStripeTestCheckout(button){
+  const cart=getCart();
+  if(!cart.length)return;
+  const items=cart.map(it=>{
+    const p=PRODUCTS.find(x=>x.id===it.id);
+    return p?{slug:p.slug,quantity:Math.min(5,Math.max(1,it.qty||1))}:null;
+  }).filter(Boolean);
+  if(!items.length)return;
+  const oldText=button.textContent;
+  button.disabled=true;
+  button.textContent='Ouverture de Stripe…';
+  try{
+    const r=await fetch('https://novae-cj-api.midnightmidnightfil.workers.dev/stripe/create-checkout-session',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({items})
+    });
+    const data=await r.json();
+    if(!r.ok||!data.url)throw new Error(data.detail||'checkout');
+    location.href=data.url;
+  }catch(e){
+    button.disabled=false;
+    button.textContent=oldText;
+    const msg=$('#stripe-test-message');
+    if(msg){
+      msg.hidden=false;
+      msg.textContent='Le paiement test est momentanément indisponible. Réessayez dans quelques instants.';
+    }
+  }
+}
+function cartPage(){const host=$('#cart-host');if(!host)return;function render(){let c=getCart();if(!c.length){host.innerHTML='<div class="empty"><h2>Votre panier est vide</h2><p>Découvrez notre sélection d’objets utiles pour la maison et le quotidien.</p><a class="btn" href="shop.html">Voir la boutique</a></div>';return}let subtotal=0;host.innerHTML=c.map(it=>{const p=PRODUCTS.find(x=>x.id===it.id);if(!p)return'';subtotal+=p.price*it.qty;return `<div class="cart-line"><div class="cart-thumb">${imgHTML(p)}</div><div><strong>${p.name}</strong><div class="product-meta">${p.category}</div></div><div><input class="qty" data-qty="${p.id}" type="number" min="1" max="5" value="${it.qty}"></div><div class="line-price">${fmt.format(p.price*it.qty)}</div><button class="icon-btn remove" data-remove="${p.id}" aria-label="Supprimer">×</button></div>`}).join('')+`<div class="cart-total"><div class="line"><span>Sous-total</span><strong>${fmt.format(subtotal)}</strong></div><div class="line"><span>Livraison</span><span>Provision incluse dans les prix; adresse confirmée dans Stripe</span></div><div class="line total"><span>Total test</span><span>${fmt.format(subtotal)}</span></div><p class="notice warning"><strong>Mode test Stripe.</strong> Aucun argent réel ne sera prélevé. Les commandes commerciales ne sont pas encore ouvertes.</p><button class="btn" id="stripe-test-checkout" style="width:100%">Paiement test Stripe</button><p id="stripe-test-message" class="notice warning" hidden></p></div>`;$('[data-qty]').forEach(i=>i.addEventListener('change',()=>{let c=getCart();const x=c.find(y=>y.id===i.dataset.qty);if(x)x.qty=Math.min(5,Math.max(1,parseInt(i.value)||1));saveCart(c);render()}));$('[data-remove]').forEach(b=>b.addEventListener('click',()=>{saveCart(getCart().filter(x=>x.id!==b.dataset.remove));render()}));$('#stripe-test-checkout')?.addEventListener('click',e=>startStripeTestCheckout(e.currentTarget))}render()}
+function checkout()'''
+s = re.sub(
+    r"function cartPage\(\)\{.*?\nfunction checkout\(\)",
+    stripe_cart_js,
+    s,
+    flags=re.S,
+)
+
+s = s.replace(
+    "Boutique en préparation · Paiement non activé · Prix en CAD",
+    "Boutique en préparation · Stripe en mode test · Aucun paiement réel"
+)
+
 app.write_text(s, encoding="utf-8")
 
 # --- Catalog wording ---
