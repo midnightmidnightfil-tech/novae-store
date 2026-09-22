@@ -18,9 +18,11 @@ jobs:
 
       - name: Test NOVAE product availability
         run: |
-          curl -sS -w "\nHTTP_STATUS:%{http_code}\n" "https://novae-cj-api.midnightmidnightfil.workers.dev/availability?sku=CJYD206907601AZ" | tee availability.txt
+          curl -sS -w "\nHTTP_STATUS:%{http_code}\n" "https://novae-cj-api.midnightmidnightfil.workers.dev/availability?slug=silicone-kitchen-set" | tee availability.txt
           cat availability.txt
           grep -q 'HTTP_STATUS:200' availability.txt
           grep -q '"productFound":true' availability.txt
-          grep -q '"variant":' availability.txt
-          grep -q '"stock":' availability.txt
+          grep -q '"inStock":' availability.txt
+          ! grep -q '"sku":' availability.txt
+          ! grep -q '"vid":' availability.txt
+          ! grep -q '"pid":' availability.txt
