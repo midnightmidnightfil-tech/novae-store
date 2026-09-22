@@ -52,8 +52,43 @@ s = s.replace(
 )
 # --- Live CJ availability on product pages (supplier IDs stay server-side) ---
 live_product_js = r'''const CJ_AVAILABILITY_API='https://novae-cj-api.midnightmidnightfil.workers.dev';
-async function loadLiveAvailability(p){const box=$('#live-stock');if(!box)return;try{const r=await fetch(`${CJ_AVAILABILITY_API}/availability?slug=${encodeURIComponent(p.slug)}`,{headers:{Accept:'application/json'}});if(!r.ok)throw new Error('availability');const data=await r.json();const when=data.checkedAt?new Date(data.checkedAt).toLocaleString('fr-CA',{dateStyle:'medium',timeStyle:'short'}):'';if(data.productFound&&data.inStock){box.innerHTML=`<strong>Disponibilité vérifiée</strong><br>Article disponible au moment de la vérification${when?` (${when})`:''}. Le stock peut changer avant la commande.`;}else if(data.productFound){box.innerHTML='<strong>Disponibilité à confirmer</strong><br>Aucun stock fournisseur n’a été confirmé pour le moment.';}else{box.innerHTML='<strong>Disponibilité à confirmer</strong><br>La référence doit être revérifiée avant l’ouverture des commandes.';}}catch(e){box.innerHTML='<strong>Disponibilité à confirmer</strong><br>La vérification en direct est momentanément indisponible.';}}
-function productPage(){const host=$('#product-host');if(!host)return;const id=host.dataset.id;const p=PRODUCTS.find(x=>x.id===id);if(!p){host.innerHTML='<div class="empty">Produit introuvable.</div>';return}document.title=`${p.name} | NOVAÉ`;const d=$('meta[name=description]');if(d)d.content=p.short;host.innerHTML=`<div class="product-detail"><div class="gallery">${imgHTML(p)}</div><div><div class="product-meta">${p.category}</div><h1>${p.name}</h1><div class="price" style="font-size:26px">${fmt.format(p.price)}</div><div id="live-stock" class="notice" style="margin:14px 0">Vérification de la disponibilité…</div><p>${p.short}</p><ul class="feature-list">${p.highlights.map(x=>`<li>${x}</li>`).join('')}</ul><div class="field"><label for="variant">Variante</label><select id="variant">${p.variants.map(v=>`<option>${v}</option>`).join('')}</select></div><div class="filter-row"><div class="field"><label for="qty">Quantité</label><input id="qty" class="qty" type="number" min="1" value="1"></div><button class="btn" id="add-product">Ajouter au panier</button></div><div class="specs"><div class="spec"><small>Matériaux</small>${p.materials}</div><div class="spec"><small>Dimensions</small>${p.dimensions}</div><div class="spec"><small>Poids</small>${p.weight}</div><div class="spec"><small>Livraison</small>${p.shipping}</div></div><h2 style="font-family:Georgia,serif;font-weight:500">Pensé pour le quotidien</h2><p>${p.description}</p><details><summary>Retours</summary><p>Retour selon notre politique publiée, après vérification de l’éligibilité de l’article. Les conditions finales doivent être adaptées à votre juridiction.</p></details><details><summary>Quand ma commande sera-t-elle livrée ?</summary><p>Le délai dépend de la destination, du traitement et du transporteur. Nous communiquons une estimation et un suivi dès qu’ils sont disponibles, sans promettre une date précise dépendante du fournisseur.</p></details></div></div><section class="section"><div class="section-head"><h2>Vous aimerez aussi</h2></div><div class="product-grid" id="related"></div></section>`;$('#add-product').addEventListener('click',()=>addToCart(p.id,Math.max(1,parseInt($('#qty').value)||1)));const rel=PRODUCTS.filter(x=>x.id!==p.id&&(x.category===p.category)).slice(0,4);$('#related').innerHTML=rel.map(productCard).join('');wireAdds();loadLiveAvailability(p)}
+async function loadLiveProductData(p){
+  const stockBox=$('#live-stock'),shippingBox=$('#live-shipping');
+  if(stockBox){
+    try{
+      const r=await fetch(`${CJ_AVAILABILITY_API}/availability?slug=${encodeURIComponent(p.slug)}`,{headers:{Accept:'application/json'}});
+      if(!r.ok)throw new Error('availability');
+      const data=await r.json();
+      const when=data.checkedAt?new Date(data.checkedAt).toLocaleString('fr-CA',{dateStyle:'medium',timeStyle:'short'}):'';
+      if(data.productFound&&data.inStock){
+        stockBox.innerHTML=`<strong>Disponibilité vérifiée</strong><br>Article disponible au moment de la vérification${when?` (${when})`:''}. Le stock peut changer avant la commande.`;
+      }else if(data.productFound){
+        stockBox.innerHTML='<strong>Disponibilité à confirmer</strong><br>Aucun stock fournisseur n’a été confirmé pour le moment.';
+      }else{
+        stockBox.innerHTML='<strong>Disponibilité à confirmer</strong><br>La référence doit être revérifiée avant l’ouverture des commandes.';
+      }
+    }catch(e){
+      stockBox.innerHTML='<strong>Disponibilité à confirmer</strong><br>La vérification en direct est momentanément indisponible.';
+    }
+  }
+  if(shippingBox){
+    try{
+      const r=await fetch(`${CJ_AVAILABILITY_API}/shipping?slug=${encodeURIComponent(p.slug)}&quantity=1`,{headers:{Accept:'application/json'}});
+      if(!r.ok)throw new Error('shipping');
+      const data=await r.json();
+      const cheapest=Array.isArray(data.options)&&data.options.length?data.options[0]:null;
+      if(cheapest){
+        const usd=new Intl.NumberFormat('fr-CA',{style:'currency',currency:'USD'}).format(cheapest.priceUsd);
+        shippingBox.innerHTML=`<strong>Estimation de livraison au Canada</strong><br>Pour 1 article : dès ${usd} · ${cheapest.estimatedDays||'délai à confirmer'} jours avec ${cheapest.name}. Estimation CJ sans code postal précis; le prix et le délai finaux peuvent varier.`;
+      }else{
+        shippingBox.innerHTML='<strong>Livraison au Canada</strong><br>Aucune estimation automatique n’est disponible pour le moment.';
+      }
+    }catch(e){
+      shippingBox.innerHTML='<strong>Livraison au Canada</strong><br>Estimation momentanément indisponible.';
+    }
+  }
+}
+function productPage(){const host=$('#product-host');if(!host)return;const id=host.dataset.id;const p=PRODUCTS.find(x=>x.id===id);if(!p){host.innerHTML='<div class="empty">Produit introuvable.</div>';return}document.title=`${p.name} | NOVAÉ`;const d=$('meta[name=description]');if(d)d.content=p.short;host.innerHTML=`<div class="product-detail"><div class="gallery">${imgHTML(p)}</div><div><div class="product-meta">${p.category}</div><h1>${p.name}</h1><div class="price" style="font-size:26px">${fmt.format(p.price)}</div><div id="live-stock" class="notice" style="margin:14px 0">Vérification de la disponibilité…</div><div id="live-shipping" class="notice" style="margin:14px 0">Calcul de la livraison vers le Canada…</div><p>${p.short}</p><ul class="feature-list">${p.highlights.map(x=>`<li>${x}</li>`).join('')}</ul><div class="field"><label for="variant">Variante</label><select id="variant">${p.variants.map(v=>`<option>${v}</option>`).join('')}</select></div><div class="filter-row"><div class="field"><label for="qty">Quantité</label><input id="qty" class="qty" type="number" min="1" value="1"></div><button class="btn" id="add-product">Ajouter au panier</button></div><div class="specs"><div class="spec"><small>Matériaux</small>${p.materials}</div><div class="spec"><small>Dimensions</small>${p.dimensions}</div><div class="spec"><small>Poids</small>${p.weight}</div><div class="spec"><small>Livraison</small>${p.shipping}</div></div><h2 style="font-family:Georgia,serif;font-weight:500">Pensé pour le quotidien</h2><p>${p.description}</p><details><summary>Retours</summary><p>Retour selon notre politique publiée, après vérification de l’éligibilité de l’article. Les conditions finales doivent être adaptées à votre juridiction.</p></details><details><summary>Quand ma commande sera-t-elle livrée ?</summary><p>Le délai dépend de la destination, du traitement et du transporteur. Nous communiquons une estimation et un suivi dès qu’ils sont disponibles, sans promettre une date précise dépendante du fournisseur.</p></details></div></div><section class="section"><div class="section-head"><h2>Vous aimerez aussi</h2></div><div class="product-grid" id="related"></div></section>`;$('#add-product').addEventListener('click',()=>addToCart(p.id,Math.max(1,parseInt($('#qty').value)||1)));const rel=PRODUCTS.filter(x=>x.id!==p.id&&(x.category===p.category)).slice(0,4);$('#related').innerHTML=rel.map(productCard).join('');wireAdds();loadLiveProductData(p)}
 function cartPage()'''
 s = re.sub(
     r"function productPage\(\)\{.*?\nfunction cartPage\(\)",
