@@ -439,7 +439,7 @@ if sink_b64.exists():
 
 image_overrides = {
     "magnetic-cable-clips": "https://cf.cjdropshipping.com/17174592/2406040438510321900.jpg",
-    "sink-storage-rack": "https://midnightmidnightfil-tech.github.io/novae-store/assets/sink-storage-rack.jpg?v=2",
+    "sink-storage-rack": "https://midnightmidnightfil-tech.github.io/novae-store/assets/sink-storage-rack.jpg?v=3",
 }
 for slug, image_url in image_overrides.items():
     pattern = rf'("slug": "{re.escape(slug)}"[\s\S]*?"image": )"[^"]*"'
@@ -504,3 +504,13 @@ for name in [
     if 'rel="canonical"' not in s:
         s = s.replace("</head>", f'<link rel="canonical" href="{url}"></head>')
     page.write_text(s, encoding="utf-8")
+
+
+# --- Cache bust storefront assets ---
+asset_version = "20260922-3"
+for html_file in root.rglob("*.html"):
+    html = html_file.read_text(encoding="utf-8")
+    html = re.sub(r'(assets/products\.js)(?:\?v=[^"]*)?', rf'\1?v={asset_version}', html)
+    html = re.sub(r'(assets/app\.js)(?:\?v=[^"]*)?', rf'\1?v={asset_version}', html)
+    html = re.sub(r'(assets/styles\.css)(?:\?v=[^"]*)?', rf'\1?v={asset_version}', html)
+    html_file.write_text(html, encoding="utf-8")
