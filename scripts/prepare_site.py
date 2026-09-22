@@ -290,7 +290,26 @@ stripe_checkout_js = r'''async function checkout(){
         const cjBlock=cj?.readyForCJ
           ? `<div class="notice" style="margin-top:14px"><strong>Dry-run CJ prêt ✓</strong><br>${cj.itemCount} article${cj.itemCount>1?'s':''} validé${cj.itemCount>1?'s':''} : produit, variante, stock et informations de livraison nécessaires confirmés pour le Canada.</div>`
           : `<div class="notice warning" style="margin-top:14px"><strong>Dry-run CJ à vérifier</strong><br>Le paiement test est confirmé, mais la préparation fournisseur n’est pas encore entièrement validée.</div>`;
-        left.innerHTML=`<h2>Paiement test confirmé ✓</h2><div class="notice"><strong>Stripe a confirmé le paiement test.</strong><br>Montant confirmé : ${amount}.<br>Référence test : <strong>${orderRef}</strong></div>${integrityBlock}${cjBlock}<p>Aucun argent réel n’a été prélevé et aucune commande CJ réelle n’a été créée.</p><a class="btn secondary" href="shop.html">Retour à la boutique</a>`;
+        left.innerHTML=`<h2>Paiement test confirmé ✓</h2><div class="notice"><strong>Stripe a confirmé le paiement test.</strong><br>Montant confirmé : ${amount}.<br>Référence test : <strong>${orderRef}</strong></div>${integrityBlock}${cjBlock}<div id="d1-order-status" class="notice" style="margin-top:14px"><strong>Enregistrement D1…</strong><br>Nous attendons la confirmation persistante du webhook Stripe.</div><p>Aucun argent réel n’a été prélevé et aucune commande CJ réelle n’a été créée.</p><a class="btn secondary" href="shop.html">Retour à la boutique</a>`;
+
+        const d1Box=$('#d1-order-status');
+        for(let attempt=0;attempt<8;attempt++){
+          try{
+            const sr=await fetch(`https://novae-cj-api.midnightmidnightfil.workers.dev/test-order/status?order_ref=${encodeURIComponent(orderRef)}`,{headers:{Accept:'application/json'}});
+            if(sr.ok){
+              const sd=await sr.json();
+              if(d1Box){
+                d1Box.innerHTML=`<strong>Commande test enregistrée dans D1 ✓</strong><br>Statut : ${sd.paymentStatus} · intégrité : ${sd.integrityVerified?'vérifiée':'à vérifier'} · CJ dry-run : ${sd.cjReady?'prêt':'à vérifier'}.`;
+              }
+              break;
+            }
+          }catch(e){}
+          await new Promise(resolve=>setTimeout(resolve,750));
+        }
+        if(d1Box&&d1Box.textContent.includes('Enregistrement D1')){
+          d1Box.classList.add('warning');
+          d1Box.innerHTML='<strong>Enregistrement D1 en attente</strong><br>Le paiement est confirmé, mais le webhook n’a pas encore été retrouvé dans la base. Aucun fulfillment réel n’est lancé.';
+        }
       }
       const h1=$('main h1');
       if(h1)h1.textContent='Paiement test confirmé';
