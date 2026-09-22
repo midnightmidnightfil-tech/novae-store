@@ -185,9 +185,11 @@ async function createStripeCheckout(env, items) {
   params.set("cancel_url", "https://midnightmidnightfil-tech.github.io/novae-store/cart.html?stripe=cancelled");
   params.set("billing_address_collection", "auto");
   params.set("shipping_address_collection[allowed_countries][0]", "CA");
+  params.set("phone_number_collection[enabled]", "true");
   params.set("locale", "fr-CA");
   params.set("payment_intent_data[metadata][store]", "NOVAE");
   params.set("metadata[store]", "NOVAE_TEST");
+  params.set("metadata[cart]", cart.map(([slug, quantity]) => `${slug}:${quantity}`).join(","));
 
   cart.forEach(([slug, quantity], index) => {
     const product = PRODUCTS.get(slug);
@@ -214,6 +216,126 @@ async function createStripeCheckout(env, items) {
 }
 
 
+
+function parseStripeCartMetadata(value) {
+  const out = [];
+  for (const part of String(value || "").split(",")) {
+    if (!part) continue;
+    const idx = part.lastIndexOf(":");
+    if (idx <= 0) continue;
+    const slug = part.slice(0, idx);
+    const quantity = Math.min(5, Math.max(1, Number.parseInt(part.slice(idx + 1), 10) || 1));
+    if (PRODUCTS.has(slug)) out.push({ slug, quantity });
+  }
+  return out;
+}
+
+async function buildCjDryRun(env, session) {
+  const cart = parseStripeCartMetadata(session?.metadata?.cart);
+  const shipping =
+    session?.shipping_details ||
+    session?.collected_information?.shipping_details ||
+    null;
+  const destinationCountry =
+    shipping?.address?.country ||
+    session?.customer_details?.address?.country ||
+    null;
+
+  if (
+    session?.livemode !== false ||
+    session?.payment_status !== "paid" ||
+    !cart.length
+  ) {
+    return {
+      dryRun: true,
+      readyForCJ: false,
+      destinationCountry,
+      itemCount: cart.length,
+      reason: !cart.length ? "missing_cart_metadata" : "payment_not_confirmed",
+      items: []
+    };
+  }
+
+  if (!env.CJ_API_KEY) {
+    return {
+      dryRun: true,
+      readyForCJ: false,
+      destinationCountry,
+      itemCount: cart.length,
+      reason: "cj_not_configured",
+      items: []
+    };
+  }
+
+  // Test-mode safety: validate at most 5 unique products and never create an order.
+  if (cart.length > 5) {
+    return {
+      dryRun: true,
+      readyForCJ: false,
+      destinationCountry,
+      itemCount: cart.length,
+      reason: "dry_run_item_limit",
+      items: []
+    };
+  }
+
+  const token = await getAccessToken(env.CJ_API_KEY);
+  const items = [];
+
+  for (const item of cart) {
+    const ref = PRODUCTS.get(item.slug);
+    if (!ref) continue;
+
+    const variants = await cjGet(
+      `/product/variant/query?pid=${encodeURIComponent(ref.pid)}`,
+      token
+    );
+    const rows = Array.isArray(variants?.data) ? variants.data : [];
+    const selected = rows.find((v) => v?.variantSku === ref.sku) || null;
+
+    if (!selected?.vid) {
+      items.push({
+        slug: item.slug,
+        name: ref.name,
+        quantity: item.quantity,
+        variantFound: false,
+        inStock: false
+      });
+      await sleep(1100);
+      continue;
+    }
+
+    await sleep(1100);
+    const stock = await cjGet(
+      `/product/stock/queryByVid?vid=${encodeURIComponent(selected.vid)}`,
+      token
+    );
+    const summary = summarizeStock(stock);
+
+    items.push({
+      slug: item.slug,
+      name: ref.name,
+      quantity: item.quantity,
+      variantFound: true,
+      inStock: summary.inStock
+    });
+
+    await sleep(1100);
+  }
+
+  return {
+    dryRun: true,
+    readyForCJ:
+      destinationCountry === "CA" &&
+      items.length === cart.length &&
+      items.every((x) => x.variantFound && x.inStock),
+    destinationCountry,
+    itemCount: cart.length,
+    reason: null,
+    items
+  };
+}
+
 async function verifyStripeSession(env, sessionId) {
   if (!env.STRIPE_SECRET_KEY) {
     throw new Error("Stripe test secret is not configured");
@@ -235,13 +357,31 @@ async function verifyStripeSession(env, sessionId) {
     throw new Error(data?.error?.message || `Stripe HTTP ${res.status}`);
   }
 
+  const paid = data.payment_status === "paid";
+  let cjDryRun = null;
+  if (paid && data.livemode === false) {
+    try {
+      cjDryRun = await buildCjDryRun(env, data);
+    } catch (err) {
+      cjDryRun = {
+        dryRun: true,
+        readyForCJ: false,
+        destinationCountry: null,
+        itemCount: 0,
+        reason: "cj_check_failed",
+        items: []
+      };
+    }
+  }
+
   return {
-    paid: data.payment_status === "paid",
+    paid,
     paymentStatus: data.payment_status || null,
     status: data.status || null,
     currency: data.currency || null,
     amountTotal: Number(data.amount_total || 0),
-    testMode: data.livemode === false
+    testMode: data.livemode === false,
+    cjDryRun
   };
 }
 
@@ -315,11 +455,18 @@ export default {
           session?.livemode === false &&
           session?.payment_status === "paid"
         ) {
+          const cjDryRun = await buildCjDryRun(env, session);
           console.log("NOVAE_TEST_PAYMENT_CONFIRMED", {
             eventId: event.id,
             sessionId: session.id,
             amountTotal: session.amount_total,
-            currency: session.currency
+            currency: session.currency,
+            cjDryRun: {
+              readyForCJ: cjDryRun.readyForCJ,
+              destinationCountry: cjDryRun.destinationCountry,
+              itemCount: cjDryRun.itemCount,
+              reason: cjDryRun.reason
+            }
           });
         }
 
