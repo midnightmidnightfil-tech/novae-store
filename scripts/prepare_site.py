@@ -106,18 +106,25 @@ stripe_cart_js = r'''async function startStripeTestCheckout(button){
   }).filter(Boolean);
   if(!items.length)return;
 
+  let requestId=sessionStorage.getItem('novae_checkout_request_id');
+  if(!requestId){
+    requestId=(crypto.randomUUID?crypto.randomUUID():('req_'+Date.now()+'_'+Math.random().toString(36).slice(2)));
+    sessionStorage.setItem('novae_checkout_request_id',requestId);
+  }
+
   const oldText=button.textContent;
   button.disabled=true;
-  button.textContent='Ouverture de Stripe…';
+  button.textContent='Vérification du stock…';
 
   try{
     const r=await fetch('https://novae-cj-api.midnightmidnightfil.workers.dev/stripe/create-checkout-session',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({items})
+      body:JSON.stringify({items,requestId})
     });
     const data=await r.json();
     if(!r.ok||!data.url)throw new Error(data.detail||'checkout');
+    if(data.orderRef)sessionStorage.setItem('novae_order_ref',data.orderRef);
     window.location.assign(data.url);
   }catch(e){
     button.disabled=false;
@@ -134,6 +141,12 @@ stripe_cart_js = r'''async function startStripeTestCheckout(button){
 function cartPage(){
   const host=$('#cart-host');
   if(!host)return;
+  const cartParams=new URLSearchParams(location.search);
+  if(cartParams.get('stripe')==='cancelled'){
+    sessionStorage.removeItem('novae_checkout_request_id');
+    sessionStorage.removeItem('novae_order_ref');
+    history.replaceState({},'',location.pathname);
+  }
 
   function render(){
     const c=getCart();
@@ -270,15 +283,21 @@ stripe_checkout_js = r'''async function checkout(){
       renderCartSummary();
       if(left){
         const cj=data.cjDryRun;
+        const orderRef=data.orderRef||sessionStorage.getItem('novae_order_ref')||'Référence indisponible';
+        const integrityBlock=data.integrityVerified
+          ? '<div class="notice" style="margin-top:14px"><strong>Intégrité du montant vérifiée ✓</strong><br>Le total Stripe correspond exactement aux prix NOVAÉ calculés côté serveur.</div>'
+          : '<div class="notice warning" style="margin-top:14px"><strong>Intégrité à vérifier</strong><br>Le total Stripe ne correspond pas au montant attendu.</div>';
         const cjBlock=cj?.readyForCJ
-          ? `<div class="notice" style="margin-top:14px"><strong>Dry-run CJ prêt ✓</strong><br>${cj.itemCount} article${cj.itemCount>1?'s':''} validé${cj.itemCount>1?'s':''} : produit, variante et stock fournisseur confirmés pour le Canada.</div>`
+          ? `<div class="notice" style="margin-top:14px"><strong>Dry-run CJ prêt ✓</strong><br>${cj.itemCount} article${cj.itemCount>1?'s':''} validé${cj.itemCount>1?'s':''} : produit, variante, stock et informations de livraison nécessaires confirmés pour le Canada.</div>`
           : `<div class="notice warning" style="margin-top:14px"><strong>Dry-run CJ à vérifier</strong><br>Le paiement test est confirmé, mais la préparation fournisseur n’est pas encore entièrement validée.</div>`;
-        left.innerHTML=`<h2>Paiement test confirmé ✓</h2><div class="notice"><strong>Stripe a confirmé le paiement test.</strong><br>Montant confirmé : ${amount}.</div>${cjBlock}<p>Aucun argent réel n’a été prélevé et aucune commande CJ réelle n’a été créée.</p><a class="btn secondary" href="shop.html">Retour à la boutique</a>`;
+        left.innerHTML=`<h2>Paiement test confirmé ✓</h2><div class="notice"><strong>Stripe a confirmé le paiement test.</strong><br>Montant confirmé : ${amount}.<br>Référence test : <strong>${orderRef}</strong></div>${integrityBlock}${cjBlock}<p>Aucun argent réel n’a été prélevé et aucune commande CJ réelle n’a été créée.</p><a class="btn secondary" href="shop.html">Retour à la boutique</a>`;
       }
       const h1=$('main h1');
       if(h1)h1.textContent='Paiement test confirmé';
       const intro=$('main .hero p');
       if(intro)intro.textContent='Le flux Stripe fonctionne correctement en environnement de test.';
+      sessionStorage.removeItem('novae_checkout_request_id');
+      sessionStorage.removeItem('novae_order_ref');
       history.replaceState({},'',location.pathname+'?stripe=verified');
     }else{
       if(left){
