@@ -22,5 +22,5 @@ jobs:
           cat dist/novae-public/index.html
       - name: Show CSS
         run: |
-          echo '===== STYLE.CSS ====='
-          cat dist/novae-public/assets/style.css
+          echo '===== STYLES.CSS ====='
+          cat dist/novae-public/assets/styles.css
