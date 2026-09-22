@@ -1,0 +1,29 @@
+name: Diagnose sink image rendering
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/diagnose-sink-image.yml"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect deployed product page
+        run: |
+          set -x
+          base="https://midnightmidnightfil-tech.github.io/novae-store"
+          curl -L "$base/products/sink-storage-rack.html?diag=1" -o page.html
+          curl -L "$base/assets/products.js?diag=1" -o products.js
+          curl -L "$base/assets/app.js?diag=1" -o app.js
+          echo "===== PAGE ASSET TAGS ====="
+          grep -oE 'assets/(products|app|styles)\.[^" ]+' page.html || true
+          echo "===== SINK PRODUCT BLOCK ====="
+          grep -n -A18 -B4 'sink-storage-rack' products.js || true
+          echo "===== IMAGE URL ====="
+          grep -oE 'https://[^"]*sink-storage-rack[^"]*' products.js || true
+          echo "===== IMG HELPER ====="
+          grep -n -A14 -B4 'function imgHTML\|const imgHTML\|imgHTML =' app.js || true
+          echo "===== DEPLOYED PAGE SIZE ====="
+          wc -c page.html products.js app.js
