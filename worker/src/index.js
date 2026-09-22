@@ -654,9 +654,14 @@ async function runDbSelfTest(env) {
   const orderRef = "NVT-D1SELFTEST";
   const sessionId = "cs_test_novae_d1_self_test";
 
-  await env.DB.prepare(
-    "INSERT OR REPLACE INTO stripe_events (event_id, created_at) VALUES (?, CURRENT_TIMESTAMP)"
-  ).bind(eventId).run();
+  // Start from a clean deterministic state.
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM test_orders WHERE order_ref = ?").bind(orderRef),
+    env.DB.prepare("DELETE FROM stripe_events WHERE event_id = ?").bind(eventId)
+  ]);
+
+  const firstClaim = await claimWebhookEvent(env, eventId);
+  const secondClaim = await claimWebhookEvent(env, eventId);
 
   await env.DB.prepare(`
     INSERT OR REPLACE INTO test_orders (
@@ -679,22 +684,27 @@ async function runDbSelfTest(env) {
     "SELECT order_ref, payment_status, integrity_verified, cj_ready FROM test_orders WHERE order_ref = ?"
   ).bind(orderRef).first();
 
+  const ok = Boolean(
+    firstClaim === true &&
+    secondClaim === false &&
+    row &&
+    row.order_ref === orderRef &&
+    row.payment_status === "paid" &&
+    Number(row.integrity_verified) === 1 &&
+    Number(row.cj_ready) === 1
+  );
+
   await env.DB.batch([
     env.DB.prepare("DELETE FROM test_orders WHERE order_ref = ?").bind(orderRef),
     env.DB.prepare("DELETE FROM stripe_events WHERE event_id = ?").bind(eventId)
   ]);
 
   return {
-    ok: Boolean(
-      row &&
-      row.order_ref === orderRef &&
-      row.payment_status === "paid" &&
-      Number(row.integrity_verified) === 1 &&
-      Number(row.cj_ready) === 1
-    )
+    ok,
+    writeReadDelete: Boolean(row),
+    persistentDedupe: firstClaim === true && secondClaim === false
   };
 }
-
 async function webhookEventProcessed(eventId) {
   if (!eventId) return false;
   const key = new Request(`https://novae.internal/stripe-events/${encodeURIComponent(eventId)}`);
