@@ -1,0 +1,23 @@
+name: Diagnose jewelry checkout
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/diagnose-jewelry-checkout.yml"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CJ availability
+        run: |
+          api="https://novae-cj-api.midnightmidnightfil.workers.dev"
+          curl -sS "$api/availability?slug=travel-jewelry-box" | tee availability.json
+
+      - name: Try Stripe test checkout
+        run: |
+          api="https://novae-cj-api.midnightmidnightfil.workers.dev"
+          code=$(curl -sS -o checkout.json -w '%{http_code}'             -H 'Origin: https://midnightmidnightfil-tech.github.io'             -H 'Content-Type: application/json'             -d '{"requestId":"diag_jewelry_20260922","items":[{"slug":"travel-jewelry-box","quantity":1}]}'             "$api/stripe/create-checkout-session")
+          echo "HTTP $code"
+          cat checkout.json
