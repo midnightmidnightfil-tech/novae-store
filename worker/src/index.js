@@ -90,6 +90,22 @@ async function cjGet(path, token) {
   return data;
 }
 
+async function cjPost(path, token, body) {
+  const res = await fetch(`${CJ_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "CJ-Access-Token": token,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok || data?.result === false) {
+    throw new Error(data?.message || `CJ HTTP ${res.status}`);
+  }
+  return data;
+}
+
 function summarizeStock(payload) {
   const rows = Array.isArray(payload?.data) ? payload.data : [];
   const countries = [];
@@ -157,7 +173,7 @@ export default {
       return json({ error: "Service temporarily unavailable" }, 503, origin);
     }
 
-    if (url.pathname !== "/availability") {
+    if (!["/availability", "/shipping"].includes(url.pathname)) {
       return json({ error: "Not found" }, 404, origin);
     }
 
@@ -180,11 +196,41 @@ export default {
         const selected = rows.find((v) => v?.variantSku === ref.sku) || null;
 
         if (!selected?.vid) {
+          return url.pathname === "/shipping"
+            ? { available: false, destinationCountry: "CA", options: [], checkedAt: new Date().toISOString() }
+            : {
+                productFound: false,
+                inStock: false,
+                warehouseCountries: [],
+                variantLabel: null,
+                checkedAt: new Date().toISOString()
+              };
+        }
+
+        if (url.pathname === "/shipping") {
+          const quantity = Math.min(5, Math.max(1, Number.parseInt(url.searchParams.get("quantity") || "1", 10) || 1));
+          const freight = await cjPost("/logistic/freightCalculate", token, {
+            startCountryCode: "CN",
+            endCountryCode: "CA",
+            products: [{ quantity, vid: selected.vid }]
+          });
+
+          const options = (Array.isArray(freight?.data) ? freight.data : [])
+            .map((row) => ({
+              name: row?.logisticName || null,
+              estimatedDays: row?.logisticAging || null,
+              priceUsd: Number(row?.totalPostageFee ?? row?.logisticPrice ?? 0) || 0
+            }))
+            .filter((row) => row.name && row.priceUsd > 0)
+            .sort((a, b) => a.priceUsd - b.priceUsd)
+            .slice(0, 8);
+
           return {
-            productFound: false,
-            inStock: false,
-            warehouseCountries: [],
-            variantLabel: null,
+            available: options.length > 0,
+            destinationCountry: "CA",
+            quantity,
+            currency: "USD",
+            options,
             checkedAt: new Date().toISOString()
           };
         }
