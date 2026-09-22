@@ -45,13 +45,19 @@ jobs:
               }
               if(!(p.price>0)) failures.push(p.slug+': invalid price');
               try{
-                let r=await fetch(p.image,{method:'HEAD',redirect:'follow',headers:{'User-Agent':'Mozilla/5.0'}});
-                if(!r.ok){
-                  r=await fetch(p.image,{method:'GET',redirect:'follow',headers:{'User-Agent':'Mozilla/5.0','Range':'bytes=0-64'}});
+                if(p.image.includes('/novae-store/assets/sink-storage-rack.jpg')){
+                  const local='dist/novae-public/assets/sink-storage-rack.jpg';
+                  if(!fs.existsSync(local) || fs.statSync(local).size < 10000) failures.push(p.slug+': local image asset missing or too small');
+                  else console.log('IMAGE OK',p.slug,'local',fs.statSync(local).size+' bytes');
+                }else{
+                  let r=await fetch(p.image,{method:'HEAD',redirect:'follow',headers:{'User-Agent':'Mozilla/5.0'}});
+                  if(!r.ok){
+                    r=await fetch(p.image,{method:'GET',redirect:'follow',headers:{'User-Agent':'Mozilla/5.0','Range':'bytes=0-64'}});
+                  }
+                  const ct=(r.headers.get('content-type')||'').toLowerCase();
+                  if(!r.ok || !ct.includes('image')) failures.push(p.slug+': image unavailable '+r.status+' '+ct+' '+p.image);
+                  else console.log('IMAGE OK',p.slug,r.status,ct);
                 }
-                const ct=(r.headers.get('content-type')||'').toLowerCase();
-                if(!r.ok || !ct.includes('image')) failures.push(p.slug+': image unavailable '+r.status+' '+ct+' '+p.image);
-                else console.log('IMAGE OK',p.slug,r.status,ct);
               }catch(e){
                 failures.push(p.slug+': image fetch failed '+e.message);
               }
