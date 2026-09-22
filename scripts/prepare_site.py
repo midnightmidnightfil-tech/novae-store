@@ -106,10 +106,13 @@ stripe_cart_js = r'''async function startStripeTestCheckout(button){
   }).filter(Boolean);
   if(!items.length)return;
 
+  const cartSignature=JSON.stringify(items.map(x=>[x.slug,x.quantity]).sort((a,b)=>a[0].localeCompare(b[0])));
   let requestId=sessionStorage.getItem('novae_checkout_request_id');
-  if(!requestId){
+  const previousSignature=sessionStorage.getItem('novae_checkout_cart_signature');
+  if(!requestId||previousSignature!==cartSignature){
     requestId=(crypto.randomUUID?crypto.randomUUID():('req_'+Date.now()+'_'+Math.random().toString(36).slice(2)));
     sessionStorage.setItem('novae_checkout_request_id',requestId);
+    sessionStorage.setItem('novae_checkout_cart_signature',cartSignature);
   }
 
   const oldText=button.textContent;
@@ -123,7 +126,12 @@ stripe_cart_js = r'''async function startStripeTestCheckout(button){
       body:JSON.stringify({items,requestId})
     });
     const data=await r.json();
-    if(!r.ok||!data.url)throw new Error(data.detail||'checkout');
+    if(!r.ok||!data.url){
+      const detail=String(data.detail||data.error||'checkout');
+      const err=new Error(detail);
+      err.detail=detail;
+      throw err;
+    }
     if(data.orderRef)sessionStorage.setItem('novae_order_ref',data.orderRef);
     window.location.assign(data.url);
   }catch(e){
@@ -131,8 +139,13 @@ stripe_cart_js = r'''async function startStripeTestCheckout(button){
     button.textContent=oldText;
     const msg=$('#stripe-test-message');
     if(msg){
+      const detail=String(e?.detail||e?.message||'');
+      let friendly='Le paiement test est momentanément indisponible. Réessayez dans quelques instants.';
+      if(detail.includes('out_of_stock')) friendly='Ce produit est actuellement indiqué hors stock chez le fournisseur.';
+      else if(detail.includes('variant_unavailable')) friendly='La variante sélectionnée n’est plus disponible chez le fournisseur.';
+      else if(detail.includes('invalid_quantity')) friendly='La quantité demandée n’est pas valide.';
       msg.hidden=false;
-      msg.textContent='Le paiement test est momentanément indisponible. Réessayez dans quelques instants.';
+      msg.textContent=friendly;
     }
     console.error('NOVAÉ Stripe test checkout:',e);
   }
@@ -144,6 +157,7 @@ function cartPage(){
   const cartParams=new URLSearchParams(location.search);
   if(cartParams.get('stripe')==='cancelled'){
     sessionStorage.removeItem('novae_checkout_request_id');
+    sessionStorage.removeItem('novae_checkout_cart_signature');
     sessionStorage.removeItem('novae_order_ref');
     history.replaceState({},'',location.pathname);
   }
@@ -316,6 +330,7 @@ stripe_checkout_js = r'''async function checkout(){
       const intro=$('main .hero p');
       if(intro)intro.textContent='Le flux Stripe fonctionne correctement en environnement de test.';
       sessionStorage.removeItem('novae_checkout_request_id');
+      sessionStorage.removeItem('novae_checkout_cart_signature');
       sessionStorage.removeItem('novae_order_ref');
       history.replaceState({},'',location.pathname+'?stripe=verified');
     }else{
