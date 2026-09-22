@@ -1,0 +1,30 @@
+name: Inspect NOVAE cart runtime
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/inspect-cart.yml"
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Rebuild storefront
+        run: |
+          cat archive/part*.b64 | base64 --decode > novae-public.zip
+          mkdir -p dist
+          unzip -q novae-public.zip -d dist
+          python scripts/prepare_site.py dist/novae-public
+      - name: Print cart-related JS
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path("dist/novae-public/assets/app.js").read_text()
+          for needle in ["function getCart", "function cartPage", "localStorage", "checkout.html"]:
+              i=s.find(needle)
+              if i>=0:
+                  print("\n---", needle, "---")
+                  print(s[max(0,i-1000):i+7000])
+          PY
