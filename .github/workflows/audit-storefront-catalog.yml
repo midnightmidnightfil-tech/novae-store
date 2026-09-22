@@ -30,9 +30,9 @@ jobs:
           node <<'NODE'
           const fs=require('fs'), vm=require('vm');
           const code=fs.readFileSync('dist/novae-public/assets/products.js','utf8');
-          const ctx={};
-          vm.runInNewContext(code+'\nthis.__PRODUCTS=PRODUCTS;',ctx);
-          const products=ctx.__PRODUCTS;
+          const ctx={window:{}};
+          vm.runInNewContext(code,ctx);
+          const products=ctx.window.NOVAE_PRODUCTS;
           if(!Array.isArray(products)||products.length!==16) throw new Error('Expected 16 products, got '+(products?.length||0));
 
           const required=['id','slug','name','category','price','currency','weight','materials','dimensions','variants','image','short','highlights','description','shipping'];
@@ -66,9 +66,9 @@ jobs:
           node <<'NODE'
           const fs=require('fs'),vm=require('vm');
           const code=fs.readFileSync('dist/novae-public/assets/products.js','utf8');
-          const ctx={}; vm.runInNewContext(code+'\nthis.__PRODUCTS=PRODUCTS;',ctx);
+          const ctx={window:{}}; vm.runInNewContext(code,ctx);
           (async()=>{
-            for(const p of ctx.__PRODUCTS){
+            for(const p of ctx.window.NOVAE_PRODUCTS){
               const r=await fetch('https://novae-cj-api.midnightmidnightfil.workers.dev/pricing?slug='+encodeURIComponent(p.slug));
               if(!r.ok) throw new Error(p.slug+' pricing HTTP '+r.status);
               const d=await r.json();
@@ -84,11 +84,11 @@ jobs:
           node <<'NODE'
           const fs=require('fs'),vm=require('vm');
           const code=fs.readFileSync('dist/novae-public/assets/products.js','utf8');
-          const ctx={}; vm.runInNewContext(code+'\nthis.__PRODUCTS=PRODUCTS;',ctx);
+          const ctx={window:{}}; vm.runInNewContext(code,ctx);
           const sleep=ms=>new Promise(r=>setTimeout(r,ms));
           (async()=>{
             let unavailable=[];
-            for(const p of ctx.__PRODUCTS){
+            for(const p of ctx.window.NOVAE_PRODUCTS){
               const r=await fetch('https://novae-cj-api.midnightmidnightfil.workers.dev/availability?slug='+encodeURIComponent(p.slug));
               if(!r.ok){ unavailable.push(p.slug+': HTTP '+r.status); continue; }
               const d=await r.json();
