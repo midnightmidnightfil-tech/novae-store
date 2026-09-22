@@ -249,8 +249,10 @@ export default {
             available: options.length > 0,
             destinationCountry: "CA",
             quantity,
-            currency: "USD",
-            options,
+            options: options.map((row) => ({
+              name: row.name,
+              estimatedDays: row.estimatedDays
+            })),
             checkedAt: new Date().toISOString()
           };
         }
