@@ -1,0 +1,39 @@
+name: Audit NOVAE pricing
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/audit-pricing.yml"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Audit 16 products
+        shell: bash
+        run: |
+          set -e
+          slugs=(
+            silicone-kitchen-set
+            iced-coffee-cup
+            expandable-dish-rack
+            wooden-lunch-box
+            magnetic-cable-clips
+            travel-jewelry-box
+            stackable-drawer
+            foldable-coffee-cup
+            ceramic-tea-mug
+            japanese-tableware-set
+            cotton-table-mat
+            fruit-drain-basket
+            sink-storage-rack
+            woven-storage-basket
+            desktop-water-dispenser
+            wall-spice-rack
+          )
+          for slug in "${slugs[@]}"; do
+            echo "=== $slug ==="
+            curl -sS "https://novae-cj-api.midnightmidnightfil.workers.dev/pricing?slug=$slug" || true
+            echo
+          done
