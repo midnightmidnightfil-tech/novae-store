@@ -522,6 +522,126 @@ async function verifyStripeWebhookSignature(rawBody, signatureHeader, secret) {
 }
 
 
+
+async function ensureDbSchema(env) {
+  if (!env.DB) return false;
+
+  await env.DB.batch([
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS stripe_events (
+        event_id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS test_orders (
+        order_ref TEXT PRIMARY KEY,
+        stripe_session_id TEXT UNIQUE NOT NULL,
+        payment_status TEXT NOT NULL,
+        amount_total INTEGER NOT NULL,
+        currency TEXT NOT NULL,
+        integrity_verified INTEGER NOT NULL DEFAULT 0,
+        cj_ready INTEGER NOT NULL DEFAULT 0,
+        destination_country TEXT,
+        item_count INTEGER NOT NULL DEFAULT 0,
+        cart_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+  ]);
+
+  return true;
+}
+
+async function claimWebhookEvent(env, eventId) {
+  if (!env.DB || !eventId) return null;
+  await ensureDbSchema(env);
+  const result = await env.DB.prepare(
+    "INSERT OR IGNORE INTO stripe_events (event_id) VALUES (?)"
+  ).bind(eventId).run();
+  return Number(result?.meta?.changes || 0) > 0;
+}
+
+async function upsertTestOrder(env, session, cjDryRun) {
+  if (!env.DB) return false;
+  await ensureDbSchema(env);
+
+  const orderRef =
+    session?.metadata?.order_ref ||
+    session?.client_reference_id ||
+    null;
+  if (!orderRef || !session?.id) return false;
+
+  const cart = parseStripeCartMetadata(session?.metadata?.cart);
+  const cartJson = JSON.stringify(
+    cart.map((item) => ({ slug: item.slug, quantity: item.quantity }))
+  );
+
+  await env.DB.prepare(`
+    INSERT INTO test_orders (
+      order_ref,
+      stripe_session_id,
+      payment_status,
+      amount_total,
+      currency,
+      integrity_verified,
+      cj_ready,
+      destination_country,
+      item_count,
+      cart_json,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(order_ref) DO UPDATE SET
+      stripe_session_id = excluded.stripe_session_id,
+      payment_status = excluded.payment_status,
+      amount_total = excluded.amount_total,
+      currency = excluded.currency,
+      integrity_verified = excluded.integrity_verified,
+      cj_ready = excluded.cj_ready,
+      destination_country = excluded.destination_country,
+      item_count = excluded.item_count,
+      cart_json = excluded.cart_json,
+      updated_at = CURRENT_TIMESTAMP
+  `).bind(
+    orderRef,
+    session.id,
+    session.payment_status || "unknown",
+    Number(session.amount_total || 0),
+    String(session.currency || "").toLowerCase(),
+    sessionIntegrity(session).ok ? 1 : 0,
+    cjDryRun?.readyForCJ ? 1 : 0,
+    cjDryRun?.destinationCountry || null,
+    Number(cjDryRun?.itemCount || cart.length || 0),
+    cartJson
+  ).run();
+
+  return true;
+}
+
+async function getTestOrder(env, orderRef) {
+  if (!env.DB || !orderRef) return null;
+  await ensureDbSchema(env);
+  return env.DB.prepare(`
+    SELECT
+      order_ref,
+      stripe_session_id,
+      payment_status,
+      amount_total,
+      currency,
+      integrity_verified,
+      cj_ready,
+      destination_country,
+      item_count,
+      created_at,
+      updated_at
+    FROM test_orders
+    WHERE order_ref = ?
+    LIMIT 1
+  `).bind(orderRef).first();
+}
+
 async function webhookEventProcessed(eventId) {
   if (!eventId) return false;
   const key = new Request(`https://novae.internal/stripe-events/${encodeURIComponent(eventId)}`);
@@ -566,8 +686,14 @@ export default {
         const event = JSON.parse(rawBody);
         const session = event?.data?.object;
 
-        if (await webhookEventProcessed(event?.id)) {
-          return json({ received: true, duplicate: true }, 200, "", { "Cache-Control": "no-store" });
+        let claimedInDb = null;
+        if (env.DB) {
+          claimedInDb = await claimWebhookEvent(env, event?.id);
+          if (claimedInDb === false) {
+            return json({ received: true, duplicate: true, persistence: "d1" }, 200, "", { "Cache-Control": "no-store" });
+          }
+        } else if (await webhookEventProcessed(event?.id)) {
+          return json({ received: true, duplicate: true, persistence: "cache-fallback" }, 200, "", { "Cache-Control": "no-store" });
         }
 
         if (
@@ -589,6 +715,9 @@ export default {
           }
 
           const cjDryRun = await buildCjDryRun(env, session);
+          if (env.DB) {
+            await upsertTestOrder(env, session, cjDryRun);
+          }
           console.log("NOVAE_TEST_PAYMENT_CONFIRMED", {
             eventId: event.id,
             sessionId: session.id,
@@ -606,8 +735,14 @@ export default {
           });
         }
 
-        await markWebhookEventProcessed(event?.id);
-        return json({ received: true, duplicate: false }, 200, "", { "Cache-Control": "no-store" });
+        if (!env.DB) {
+          await markWebhookEventProcessed(event?.id);
+        }
+        return json({
+          received: true,
+          duplicate: false,
+          persistence: env.DB ? "d1" : "cache-fallback"
+        }, 200, "", { "Cache-Control": "no-store" });
       } catch (err) {
         return json(
           { error: "Webhook processing failed" },
@@ -658,6 +793,39 @@ export default {
       }
     }
 
+    if (url.pathname === "/test-order/status") {
+      if (!ALLOWED_ORIGINS.has(origin)) {
+        return json({ error: "Origin not allowed" }, 403, origin);
+      }
+      if (!env.DB) {
+        return json({ error: "Persistent order storage not configured" }, 503, origin);
+      }
+      try {
+        const orderRef = (url.searchParams.get("order_ref") || "").trim();
+        if (!/^NVT-[A-Z0-9]+$/.test(orderRef)) {
+          return json({ error: "Invalid order reference" }, 400, origin);
+        }
+        const row = await getTestOrder(env, orderRef);
+        if (!row) {
+          return json({ error: "Order not found" }, 404, origin);
+        }
+        return json({
+          orderRef: row.order_ref,
+          paymentStatus: row.payment_status,
+          amountTotal: row.amount_total,
+          currency: row.currency,
+          integrityVerified: Boolean(row.integrity_verified),
+          cjReady: Boolean(row.cj_ready),
+          destinationCountry: row.destination_country,
+          itemCount: row.item_count,
+          updatedAt: row.updated_at,
+          testMode: true
+        }, 200, origin, { "Cache-Control": "no-store" });
+      } catch (err) {
+        return json({ error: "Order lookup failed" }, 500, origin);
+      }
+    }
+
     if (url.pathname === "/health") {
       return json(
         {
@@ -666,7 +834,8 @@ export default {
           secretConfigured: Boolean(env.CJ_API_KEY),
           stripeTestConfigured: Boolean(env.STRIPE_SECRET_KEY),
           stripeWebhookConfigured: Boolean(env.STRIPE_WEBHOOK_SECRET),
-          fulfillmentMode: "dry-run"
+          fulfillmentMode: "dry-run",
+          d1Configured: Boolean(env.DB)
         },
         200,
         origin,
