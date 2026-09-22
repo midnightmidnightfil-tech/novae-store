@@ -1,0 +1,71 @@
+name: Validate NOVAE catalog sync
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "worker/src/index.js"
+      - "scripts/prepare_site.py"
+      - ".github/workflows/validate-catalog-sync.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compare storefront and backend prices
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re, sys
+
+          worker = Path("worker/src/index.js").read_text(encoding="utf-8")
+          prep = Path("scripts/prepare_site.py").read_text(encoding="utf-8")
+
+          worker_prices = {
+              slug: float(price)
+              for slug, price in re.findall(
+                  r'\["([^"]+)", \{ name: "[^"]+", priceCad: ([0-9]+(?:\.[0-9]+)?)',
+                  worker
+              )
+          }
+
+          m = re.search(r'price_overrides = \{([\s\S]*?)\n\}', prep)
+          if not m:
+              raise SystemExit("price_overrides block not found")
+
+          storefront_prices = {
+              slug: float(price)
+              for slug, price in re.findall(
+                  r'"([^"]+)":\s*([0-9]+(?:\.[0-9]+)?)',
+                  m.group(1)
+              )
+          }
+
+          if len(worker_prices) != 16:
+              raise SystemExit(f"Expected 16 backend products, got {len(worker_prices)}")
+          if len(storefront_prices) != 16:
+              raise SystemExit(f"Expected 16 storefront products, got {len(storefront_prices)}")
+          if set(worker_prices) != set(storefront_prices):
+              raise SystemExit(
+                  f"Slug mismatch: backend-only={set(worker_prices)-set(storefront_prices)}, "
+                  f"storefront-only={set(storefront_prices)-set(worker_prices)}"
+              )
+
+          mismatches = [
+              (slug, storefront_prices[slug], worker_prices[slug])
+              for slug in sorted(worker_prices)
+              if abs(storefront_prices[slug] - worker_prices[slug]) > 0.001
+          ]
+          if mismatches:
+              raise SystemExit(f"Price mismatch: {mismatches}")
+
+          print("All 16 NOVAE prices are synchronized.")
+          PY
+
+      - name: Confirm production remains test-only
+        run: |
+          grep -q 'fulfillmentMode: "dry-run"' worker/src/index.js
+          ! grep -q '/order/create' worker/src/index.js
+          ! grep -q 'createOrder' worker/src/index.js
