@@ -25,6 +25,25 @@ const ALLOWED_SKUS = new Set([
   "CJYD206141801AZ"
 ]);
 
+const SKU_PID = new Map([
+  ["CJYD206907601AZ", "2406260541431612500"],
+  ["CJYD236964001AZ", "2505060802541627800"],
+  ["CJYD242026701AZ", "2507040555101620400"],
+  ["CJCJ136715001AZ", "1465556675883831296"],
+  ["CJYD197888501AZ", "1763402968205897728"],
+  ["CJYD228090802BY", "2501290753441625000"],
+  ["CJJT110132001AZ", "1386883997170274304"],
+  ["CJHS115718201AZ", "1400300694791131136"],
+  ["CJHS113613801AZ", "1395197760894013440"],
+  ["CJCJ113478501AZ", "1394840032447172608"],
+  ["CJCJ177046101AZ", "1664950078802505728"],
+  ["CJYD208536601AZ", "2407160828401622500"],
+  ["CJYD207339601AZ", "2407020239431617500"],
+  ["CJYD204791101AZ", "1795379973377765376"],
+  ["CJHS167415802BY", "1621032671155597312"],
+  ["CJYD206141801AZ", "2406160346461601500"]
+]);
+
 let tokenCache = { token: null, expiresAt: 0 };
 
 function cors(origin) {
@@ -171,23 +190,39 @@ export default {
         return await cachedJson(request, origin, async () => {
           const token = await getAccessToken(env.CJ_API_KEY);
 
-          const [variants, stock] = await Promise.all([
-            cjGet(`/product/variant/query?variantSku=${encodeURIComponent(sku)}`, token),
-            cjGet(`/product/stock/queryBySku?sku=${encodeURIComponent(sku)}`, token)
-          ]);
+          const pid = SKU_PID.get(sku);
+          const variants = await cjGet(
+            `/product/variant/query?pid=${encodeURIComponent(pid)}`,
+            token
+          );
 
           const variantRows = Array.isArray(variants?.data) ? variants.data : [];
-          const selected = variantRows.find((v) => v?.variantSku === sku) || variantRows[0] || null;
+          const selected = variantRows.find((v) => v?.variantSku === sku) || null;
+
+          if (!selected?.vid) {
+            return {
+              sku,
+              productFound: false,
+              variant: null,
+              stock: { inStock: false, totalQuantity: 0, locations: [] },
+              checkedAt: new Date().toISOString()
+            };
+          }
+
+          const stock = await cjGet(
+            `/product/stock/queryByVid?vid=${encodeURIComponent(selected.vid)}`,
+            token
+          );
 
           return {
             sku,
-            productFound: Boolean(selected),
-            variant: selected ? {
-              vid: selected.vid || null,
-              pid: selected.pid || null,
+            productFound: true,
+            variant: {
+              vid: selected.vid,
+              pid: selected.pid || pid,
               key: selected.variantKey || null,
               weightG: Number(selected.variantWeight || 0) || null
-            } : null,
+            },
             stock: stockSummary(stock),
             checkedAt: new Date().toISOString()
           };
