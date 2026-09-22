@@ -34,7 +34,7 @@ function cors(origin) {
   return {
     "Access-Control-Allow-Origin": allowed,
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type,X-NOVAE-Test",
     "Vary": "Origin"
   };
 }
@@ -642,6 +642,59 @@ async function getTestOrder(env, orderRef) {
   `).bind(orderRef).first();
 }
 
+
+async function runDbSelfTest(env) {
+  if (!env.DB) {
+    return { ok: false, reason: "db_not_bound" };
+  }
+
+  await ensureDbSchema(env);
+
+  const eventId = "evt_novae_d1_self_test";
+  const orderRef = "NVT-D1SELFTEST";
+  const sessionId = "cs_test_novae_d1_self_test";
+
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO stripe_events (event_id, created_at) VALUES (?, CURRENT_TIMESTAMP)"
+  ).bind(eventId).run();
+
+  await env.DB.prepare(`
+    INSERT OR REPLACE INTO test_orders (
+      order_ref,
+      stripe_session_id,
+      payment_status,
+      amount_total,
+      currency,
+      integrity_verified,
+      cj_ready,
+      destination_country,
+      item_count,
+      cart_json,
+      updated_at
+    )
+    VALUES (?, ?, 'paid', 100, 'cad', 1, 1, 'CA', 1, '[]', CURRENT_TIMESTAMP)
+  `).bind(orderRef, sessionId).run();
+
+  const row = await env.DB.prepare(
+    "SELECT order_ref, payment_status, integrity_verified, cj_ready FROM test_orders WHERE order_ref = ?"
+  ).bind(orderRef).first();
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM test_orders WHERE order_ref = ?").bind(orderRef),
+    env.DB.prepare("DELETE FROM stripe_events WHERE event_id = ?").bind(eventId)
+  ]);
+
+  return {
+    ok: Boolean(
+      row &&
+      row.order_ref === orderRef &&
+      row.payment_status === "paid" &&
+      Number(row.integrity_verified) === 1 &&
+      Number(row.cj_ready) === 1
+    )
+  };
+}
+
 async function webhookEventProcessed(eventId) {
   if (!eventId) return false;
   const key = new Request(`https://novae.internal/stripe-events/${encodeURIComponent(eventId)}`);
@@ -668,6 +721,23 @@ export default {
     }
 
     const url = new URL(request.url);
+
+    if (request.method === "POST" && url.pathname === "/test/d1-self-test") {
+      if (!ALLOWED_ORIGINS.has(origin) || request.headers.get("X-NOVAE-Test") !== "d1-smoke") {
+        return json({ error: "Not allowed" }, 403, origin, { "Cache-Control": "no-store" });
+      }
+      try {
+        const result = await runDbSelfTest(env);
+        return json(result, result.ok ? 200 : 503, origin, { "Cache-Control": "no-store" });
+      } catch (err) {
+        return json(
+          { ok: false, error: "D1 self-test failed" },
+          500,
+          origin,
+          { "Cache-Control": "no-store" }
+        );
+      }
+    }
 
     if (request.method === "POST" && url.pathname === "/stripe/webhook") {
       try {
