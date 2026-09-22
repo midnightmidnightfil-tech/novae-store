@@ -33,7 +33,7 @@ jobs:
         run: |
           set -e
           api="https://novae-cj-api.midnightmidnightfil.workers.dev"
-          curl -fsS             -X POST             -H 'Origin: https://midnightmidnightfil-tech.github.io'             -H 'X-NOVAE-Test: d1-smoke'             "$api/test/d1-self-test" | tee d1.json
+          curl -sS             -X POST             -H 'Origin: https://midnightmidnightfil-tech.github.io'             -H 'X-NOVAE-Test: d1-smoke'             "$api/test/d1-self-test" | tee d1.json
           grep -q '"ok":true' d1.json
           grep -q '"writeReadDelete":true' d1.json
           grep -q '"persistentDedupe":true' d1.json
