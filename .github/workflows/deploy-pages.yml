@@ -35,6 +35,7 @@ jobs:
       - name: Prepare public storefront
         run: |
           python scripts/prepare_site.py dist/novae-public
+          python scripts/premium_design.py dist/novae-public
           node --check dist/novae-public/assets/app.js
           grep -q "Sélection NOVAÉ" dist/novae-public/shop.html
           grep -q "midnightmidnightfil-tech.github.io/novae-store" dist/novae-public/sitemap.xml
