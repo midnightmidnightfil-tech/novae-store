@@ -172,8 +172,8 @@ export default {
           const token = await getAccessToken(env.CJ_API_KEY);
 
           const [product, variants, stock] = await Promise.all([
-            cjGet(`/product/query?productSku=${encodeURIComponent(sku)}`, token),
-            cjGet(`/product/variant/query?productSku=${encodeURIComponent(sku)}&countryCode=CA`, token),
+            cjGet(`/product/query?variantSku=${encodeURIComponent(sku)}`, token),
+            cjGet(`/product/variant/query?variantSku=${encodeURIComponent(sku)}&countryCode=CA`, token),
             cjGet(`/product/stock/queryBySku?sku=${encodeURIComponent(sku)}`, token)
           ]);
 
