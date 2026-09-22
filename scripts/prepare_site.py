@@ -211,6 +211,91 @@ s = s.replace(
     "Boutique en préparation · Stripe en mode test · Aucun paiement réel"
 )
 
+# --- Verify Stripe test payment on return page ---
+stripe_checkout_js = r'''async function checkout(){
+  const summary=$('#checkout-summary');
+  if(!summary)return;
+
+  const params=new URLSearchParams(location.search);
+  const stripeState=params.get('stripe');
+  const sessionId=params.get('session_id');
+
+  function renderCartSummary(){
+    const c=getCart();
+    let subtotal=0;
+    summary.innerHTML=c.map(it=>{
+      const p=PRODUCTS.find(x=>x.id===it.id);
+      if(!p)return'';
+      subtotal+=p.price*it.qty;
+      return `<div class="line"><span>${p.name} × ${it.qty}</span><strong>${fmt.format(p.price*it.qty)}</strong></div>`;
+    }).join('')+`<div class="line total"><span>Sous-total</span><span>${fmt.format(subtotal)}</span></div><div class="line"><span>Livraison</span><span>Provision incluse</span></div>`;
+  }
+
+  renderCartSummary();
+
+  if(stripeState!=='success'){
+    if(stripeState==='cancelled'){
+      const grid=$('.checkout-grid');
+      const left=grid?.firstElementChild;
+      if(left){
+        left.innerHTML='<h2>Paiement test annulé</h2><div class="notice warning"><strong>Aucun paiement n’a été effectué.</strong> Votre panier a été conservé.</div><p>Vous pouvez retourner au panier et réessayer quand vous voulez.</p><a class="btn secondary" href="cart.html">Retour au panier</a>';
+      }
+    }
+    return;
+  }
+
+  const grid=$('.checkout-grid');
+  const left=grid?.firstElementChild;
+  if(left){
+    left.innerHTML='<h2>Vérification Stripe…</h2><div class="notice">Nous confirmons le paiement test directement auprès de Stripe.</div>';
+  }
+
+  if(!sessionId){
+    if(left){
+      left.innerHTML='<h2>Retour Stripe reçu</h2><div class="notice warning"><strong>Impossible de confirmer cette ancienne session.</strong> Aucun traitement fournisseur n’a été lancé.</div><p>Refaites un paiement test après cette mise à jour pour voir la confirmation complète.</p><a class="btn secondary" href="cart.html">Retour au panier</a>';
+    }
+    return;
+  }
+
+  try{
+    const r=await fetch(`https://novae-cj-api.midnightmidnightfil.workers.dev/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`,{
+      headers:{Accept:'application/json'}
+    });
+    const data=await r.json();
+    if(!r.ok)throw new Error(data.detail||'verification');
+
+    if(data.paid&&data.testMode){
+      const amount=new Intl.NumberFormat('fr-CA',{style:'currency',currency:(data.currency||'cad').toUpperCase()}).format((data.amountTotal||0)/100);
+      saveCart([]);
+      renderCartSummary();
+      if(left){
+        left.innerHTML=`<h2>Paiement test confirmé ✓</h2><div class="notice"><strong>Stripe a confirmé le paiement test.</strong><br>Montant confirmé : ${amount}.</div><p>Aucun argent réel n’a été prélevé et aucune commande CJ réelle n’a été créée.</p><a class="btn secondary" href="shop.html">Retour à la boutique</a>`;
+      }
+      const h1=$('main h1');
+      if(h1)h1.textContent='Paiement test confirmé';
+      const intro=$('main .hero p');
+      if(intro)intro.textContent='Le flux Stripe fonctionne correctement en environnement de test.';
+      history.replaceState({},'',location.pathname+'?stripe=verified');
+    }else{
+      if(left){
+        left.innerHTML='<h2>Paiement non confirmé</h2><div class="notice warning"><strong>Stripe n’indique pas un paiement terminé.</strong> Le panier a été conservé.</div><a class="btn secondary" href="cart.html">Retour au panier</a>';
+      }
+    }
+  }catch(e){
+    if(left){
+      left.innerHTML='<h2>Vérification indisponible</h2><div class="notice warning"><strong>Le paiement test n’a pas pu être vérifié.</strong> Le panier a été conservé et aucune commande fournisseur n’a été lancée.</div><a class="btn secondary" href="cart.html">Retour au panier</a>';
+    }
+    console.error('NOVAÉ Stripe verification:',e);
+  }
+}
+function formDemo()'''
+s = re.sub(
+    r"function checkout\(\)\{.*?\nfunction formDemo\(\)",
+    stripe_checkout_js,
+    s,
+    flags=re.S,
+)
+
 app.write_text(s, encoding="utf-8")
 
 # --- Catalog wording ---
