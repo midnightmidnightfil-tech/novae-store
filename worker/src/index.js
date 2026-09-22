@@ -7,22 +7,22 @@ const ALLOWED_ORIGINS = new Set([
 ]);
 
 const PRODUCTS = new Map([
-  ["silicone-kitchen-set", { sku: "CJYD206907601AZ", pid: "2406260541431612500" }],
-  ["iced-coffee-cup", { sku: "CJYD236964001AZ", pid: "2505060802541627800" }],
-  ["expandable-dish-rack", { sku: "CJYD242026701AZ", pid: "2507040555101620400" }],
-  ["wooden-lunch-box", { sku: "CJCJ136715001AZ", pid: "1465556675883831296" }],
-  ["magnetic-cable-clips", { sku: "CJYD197888501AZ", pid: "1763402968205897728" }],
-  ["travel-jewelry-box", { sku: "CJYD228090802BY", pid: "2501290753441625000" }],
-  ["stackable-drawer", { sku: "CJJT110132001AZ", pid: "1386883997170274304" }],
-  ["foldable-coffee-cup", { sku: "CJHS115718201AZ", pid: "1400300694791131136" }],
-  ["ceramic-tea-mug", { sku: "CJHS113613801AZ", pid: "1395197760894013440" }],
-  ["japanese-tableware-set", { sku: "CJCJ113478501AZ", pid: "1394840032447172608" }],
-  ["cotton-table-mat", { sku: "CJCJ177046101AZ", pid: "1664950078802505728" }],
-  ["fruit-drain-basket", { sku: "CJYD208536601AZ", pid: "2407160828401622500" }],
-  ["sink-storage-rack", { sku: "CJYD207339601AZ", pid: "2407020239431617500" }],
-  ["woven-storage-basket", { sku: "CJYD204791101AZ", pid: "1795379973377765376" }],
-  ["desktop-water-dispenser", { sku: "CJHS167415802BY", pid: "1621032671155597312" }],
-  ["wall-spice-rack", { sku: "CJYD206141801AZ", pid: "2406160346461601500" }]
+  ["silicone-kitchen-set", { name: "Ensemble cuisine silicone 11 pièces", priceCad: 64.90, sku: "CJYD206907601AZ", pid: "2406260541431612500" }],
+  ["iced-coffee-cup", { name: "Gobelet café glacé 500 ml avec bac à glaçons", priceCad: 24.90, sku: "CJYD236964001AZ", pid: "2505060802541627800" }],
+  ["expandable-dish-rack", { name: "Organisateur extensible pour vaisselle", priceCad: 29.90, sku: "CJYD242026701AZ", pid: "2507040555101620400" }],
+  ["wooden-lunch-box", { name: "Boîte repas en bois", priceCad: 54.90, sku: "CJCJ136715001AZ", pid: "1465556675883831296" }],
+  ["magnetic-cable-clips", { name: "Clips magnétiques pour câbles", priceCad: 18.90, sku: "CJYD197888501AZ", pid: "1763402968205897728" }],
+  ["travel-jewelry-box", { name: "Coffret bijoux de voyage", priceCad: 44.90, sku: "CJYD228090802BY", pid: "2501290753441625000" }],
+  ["stackable-drawer", { name: "Tiroir de rangement empilable", priceCad: 24.90, sku: "CJJT110132001AZ", pid: "1386883997170274304" }],
+  ["foldable-coffee-cup", { name: "Gobelet silicone pliable", priceCad: 19.90, sku: "CJHS115718201AZ", pid: "1400300694791131136" }],
+  ["ceramic-tea-mug", { name: "Mug céramique filtre/couvercle", priceCad: 44.90, sku: "CJHS113613801AZ", pid: "1395197760894013440" }],
+  ["japanese-tableware-set", { name: "Service céramique style japonais", priceCad: 34.90, sku: "CJCJ113478501AZ", pid: "1394840032447172608" }],
+  ["cotton-table-mat", { name: "Set de table rond à franges", priceCad: 21.90, sku: "CJCJ177046101AZ", pid: "1664950078802505728" }],
+  ["fruit-drain-basket", { name: "Boîte égouttoir avec couvercle", priceCad: 24.90, sku: "CJYD208536601AZ", pid: "2407160828401622500" }],
+  ["sink-storage-rack", { name: "Rangement compact pour évier", priceCad: 29.90, sku: "CJYD207339601AZ", pid: "2407020239431617500" }],
+  ["woven-storage-basket", { name: "Panier rangement tressé", priceCad: 59.90, sku: "CJYD204791101AZ", pid: "1795379973377765376" }],
+  ["desktop-water-dispenser", { name: "Distributeur d’eau rechargeable de bureau", priceCad: 49.90, sku: "CJHS167415802BY", pid: "1621032671155597312" }],
+  ["wall-spice-rack", { name: "Étagère murale condiments", priceCad: 34.90, sku: "CJYD206141801AZ", pid: "2406160346461601500" }]
 ]);
 
 let tokenCache = { token: null, expiresAt: 0 };
@@ -33,7 +33,7 @@ function cors(origin) {
     : "https://midnightmidnightfil-tech.github.io";
   return {
     "Access-Control-Allow-Origin": allowed,
-    "Access-Control-Allow-Methods": "GET,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Vary": "Origin"
   };
@@ -159,6 +159,60 @@ async function cachedJson(request, origin, producer) {
   return response;
 }
 
+
+async function createStripeCheckout(env, items) {
+  if (!env.STRIPE_SECRET_KEY) {
+    throw new Error("Stripe test secret is not configured");
+  }
+
+  const normalized = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    const slug = String(item?.slug || "").trim();
+    const product = PRODUCTS.get(slug);
+    if (!product) continue;
+    const qty = Math.min(5, Math.max(1, Number.parseInt(item?.quantity || "1", 10) || 1));
+    normalized.set(slug, Math.min(5, (normalized.get(slug) || 0) + qty));
+  }
+
+  const cart = [...normalized.entries()];
+  if (!cart.length || cart.length > 16) {
+    throw new Error("Cart is empty or invalid");
+  }
+
+  const params = new URLSearchParams();
+  params.set("mode", "payment");
+  params.set("success_url", "https://midnightmidnightfil-tech.github.io/novae-store/checkout.html?stripe=success&session_id={CHECKOUT_SESSION_ID}");
+  params.set("cancel_url", "https://midnightmidnightfil-tech.github.io/novae-store/cart.html?stripe=cancelled");
+  params.set("billing_address_collection", "auto");
+  params.set("shipping_address_collection[allowed_countries][0]", "CA");
+  params.set("locale", "fr-CA");
+  params.set("payment_intent_data[metadata][store]", "NOVAE");
+  params.set("metadata[store]", "NOVAE_TEST");
+
+  cart.forEach(([slug, quantity], index) => {
+    const product = PRODUCTS.get(slug);
+    params.set(`line_items[${index}][quantity]`, String(quantity));
+    params.set(`line_items[${index}][price_data][currency]`, "cad");
+    params.set(`line_items[${index}][price_data][unit_amount]`, String(Math.round(product.priceCad * 100)));
+    params.set(`line_items[${index}][price_data][product_data][name]`, product.name);
+    params.set(`line_items[${index}][price_data][product_data][metadata][slug]`, slug);
+  });
+
+  const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.STRIPE_SECRET_KEY}`,
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: params.toString()
+  });
+  const data = await res.json();
+  if (!res.ok || !data?.url) {
+    throw new Error(data?.error?.message || `Stripe HTTP ${res.status}`);
+  }
+  return { url: data.url, id: data.id };
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin") || "";
@@ -166,18 +220,38 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: cors(origin) });
     }
+
+    const url = new URL(request.url);
+
+    if (request.method === "POST" && url.pathname === "/stripe/create-checkout-session") {
+      if (!ALLOWED_ORIGINS.has(origin)) {
+        return json({ error: "Origin not allowed" }, 403, origin);
+      }
+      try {
+        const body = await request.json();
+        const session = await createStripeCheckout(env, body?.items);
+        return json({ url: session.url }, 200, origin, { "Cache-Control": "no-store" });
+      } catch (err) {
+        return json(
+          { error: "Checkout unavailable", detail: String(err?.message || err) },
+          502,
+          origin,
+          { "Cache-Control": "no-store" }
+        );
+      }
+    }
+
     if (request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405, origin);
     }
-
-    const url = new URL(request.url);
 
     if (url.pathname === "/health") {
       return json(
         {
           ok: true,
           service: "NOVAE CJ bridge",
-          secretConfigured: Boolean(env.CJ_API_KEY)
+          secretConfigured: Boolean(env.CJ_API_KEY),
+          stripeTestConfigured: Boolean(env.STRIPE_SECRET_KEY)
         },
         200,
         origin,
