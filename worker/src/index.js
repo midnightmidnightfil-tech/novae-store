@@ -25,8 +25,12 @@ const ALLOWED_SKUS = new Set([
   "CJYD206141801AZ"
 ]);
 
+let tokenCache = { token: null, expiresAt: 0 };
+
 function cors(origin) {
-  const allowed = ALLOWED_ORIGINS.has(origin) ? origin : "https://midnightmidnightfil-tech.github.io";
+  const allowed = ALLOWED_ORIGINS.has(origin)
+    ? origin
+    : "https://midnightmidnightfil-tech.github.io";
   return {
     "Access-Control-Allow-Origin": allowed,
     "Access-Control-Allow-Methods": "GET,OPTIONS",
@@ -35,45 +39,122 @@ function cors(origin) {
   };
 }
 
-function json(data, status = 200, origin = "") {
+function json(data, status = 200, origin = "", extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...cors(origin) }
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      ...cors(origin),
+      ...extraHeaders
+    }
   });
 }
 
 async function getAccessToken(apiKey) {
+  const now = Date.now();
+  if (tokenCache.token && tokenCache.expiresAt > now + 60_000) {
+    return tokenCache.token;
+  }
+
   const res = await fetch(`${CJ_BASE}/authentication/getAccessToken`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ apiKey })
   });
   const data = await res.json();
+
   if (!res.ok || !data?.result || !data?.data?.accessToken) {
     throw new Error(data?.message || "CJ authentication failed");
   }
-  return data.data.accessToken;
+
+  const expiry = Date.parse(data.data.accessTokenExpiryDate || "");
+  tokenCache = {
+    token: data.data.accessToken,
+    expiresAt: Number.isFinite(expiry) ? expiry : now + 23 * 60 * 60 * 1000
+  };
+  return tokenCache.token;
 }
 
 async function cjGet(path, token) {
   const res = await fetch(`${CJ_BASE}${path}`, {
-    headers: { "CJ-Access-Token": token, "Content-Type": "application/json" }
+    headers: {
+      "CJ-Access-Token": token,
+      "Content-Type": "application/json"
+    }
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(`CJ HTTP ${res.status}`);
+  if (!res.ok || data?.result === false) {
+    throw new Error(data?.message || `CJ HTTP ${res.status}`);
+  }
   return data;
+}
+
+function stockSummary(payload) {
+  const rows = Array.isArray(payload?.data)
+    ? payload.data
+    : Array.isArray(payload?.data?.content)
+      ? payload.data.content
+      : [];
+
+  const locations = rows.map((row) => {
+    const quantity = Number(
+      row?.totalInventoryNum ??
+      row?.storageNum ??
+      row?.cjInventoryNum ??
+      0
+    ) || 0;
+
+    return {
+      countryCode: row?.countryCode || null,
+      location: row?.areaEn || null,
+      inStock: quantity > 0,
+      quantity
+    };
+  });
+
+  return {
+    inStock: locations.some((x) => x.inStock),
+    totalQuantity: locations.reduce((sum, x) => sum + x.quantity, 0),
+    locations
+  };
+}
+
+async function cachedJson(request, origin, producer) {
+  const cache = caches.default;
+  const cacheKey = new Request(request.url, { method: "GET" });
+  const hit = await cache.match(cacheKey);
+  if (hit) return hit;
+
+  const payload = await producer();
+  const response = json(payload, 200, origin, {
+    "Cache-Control": "public, max-age=300"
+  });
+
+  await cache.put(cacheKey, response.clone());
+  return response;
 }
 
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin") || "";
-    if (request.method === "OPTIONS") return new Response(null, { headers: cors(origin) });
-    if (request.method !== "GET") return json({ error: "Method not allowed" }, 405, origin);
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: cors(origin) });
+    }
+    if (request.method !== "GET") {
+      return json({ error: "Method not allowed" }, 405, origin);
+    }
 
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
-      return json({ ok: true, service: "NOVAÉ CJ bridge" }, 200, origin);
+      return json(
+        { ok: true, service: "NOVAE CJ bridge", secretConfigured: Boolean(env.CJ_API_KEY) },
+        200,
+        origin,
+        { "Cache-Control": "no-store" }
+      );
     }
 
     if (!env.CJ_API_KEY) {
@@ -86,26 +167,47 @@ export default {
     }
 
     try {
-      const token = await getAccessToken(env.CJ_API_KEY);
+      if (url.pathname === "/availability") {
+        return await cachedJson(request, origin, async () => {
+          const token = await getAccessToken(env.CJ_API_KEY);
 
-      if (url.pathname === "/product") {
-        const data = await cjGet(`/product/query?productSku=${encodeURIComponent(sku)}`, token);
-        return json(data, 200, origin);
-      }
+          const [product, variants, stock] = await Promise.all([
+            cjGet(`/product/query?productSku=${encodeURIComponent(sku)}`, token),
+            cjGet(`/product/variant/query?productSku=${encodeURIComponent(sku)}&countryCode=CA`, token),
+            cjGet(`/product/stock/queryBySku?sku=${encodeURIComponent(sku)}`, token)
+          ]);
 
-      if (url.pathname === "/variants") {
-        const data = await cjGet(`/product/variant/query?productSku=${encodeURIComponent(sku)}&countryCode=CA`, token);
-        return json(data, 200, origin);
+          const variantRows = Array.isArray(variants?.data) ? variants.data : [];
+
+          return {
+            sku,
+            productFound: Boolean(product?.result && product?.data),
+            canadaVariantCount: variantRows.length,
+            stock: stockSummary(stock),
+            checkedAt: new Date().toISOString()
+          };
+        });
       }
 
       if (url.pathname === "/stock") {
-        const data = await cjGet(`/product/stock/queryBySku?sku=${encodeURIComponent(sku)}`, token);
-        return json(data, 200, origin);
+        return await cachedJson(request, origin, async () => {
+          const token = await getAccessToken(env.CJ_API_KEY);
+          const stock = await cjGet(
+            `/product/stock/queryBySku?sku=${encodeURIComponent(sku)}`,
+            token
+          );
+          return { sku, stock: stockSummary(stock), checkedAt: new Date().toISOString() };
+        });
       }
 
       return json({ error: "Not found" }, 404, origin);
     } catch (err) {
-      return json({ error: "CJ request failed", detail: String(err?.message || err) }, 502, origin);
+      return json(
+        { error: "CJ request failed", detail: String(err?.message || err) },
+        502,
+        origin,
+        { "Cache-Control": "no-store" }
+      );
     }
   }
 };
