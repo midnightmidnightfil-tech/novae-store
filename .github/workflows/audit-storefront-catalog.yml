@@ -1,0 +1,101 @@
+name: Audit NOVAE storefront catalog
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/prepare_site.py"
+      - "scripts/premium_design.py"
+      - "archive/**"
+      - ".github/workflows/audit-storefront-catalog.yml"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build storefront
+        run: |
+          cat archive/part*.b64 | base64 --decode > novae-public.zip
+          rm -rf dist
+          mkdir -p dist
+          unzip -q novae-public.zip -d dist
+          python scripts/prepare_site.py dist/novae-public
+          python scripts/premium_design.py dist/novae-public
+          node --check dist/novae-public/assets/app.js
+
+      - name: Audit 16 product records and images
+        run: |
+          node <<'NODE'
+          const fs=require('fs'), vm=require('vm');
+          const code=fs.readFileSync('dist/novae-public/assets/products.js','utf8');
+          const ctx={};
+          vm.runInNewContext(code+'\nthis.__PRODUCTS=PRODUCTS;',ctx);
+          const products=ctx.__PRODUCTS;
+          if(!Array.isArray(products)||products.length!==16) throw new Error('Expected 16 products, got '+(products?.length||0));
+
+          const required=['id','slug','name','category','price','currency','weight','materials','dimensions','variants','image','short','highlights','description','shipping'];
+          let failures=[];
+          (async()=>{
+            for(const p of products){
+              for(const key of required){
+                const v=p[key];
+                if(v==null || v==='' || (Array.isArray(v)&&v.length===0)) failures.push(p.slug+': missing '+key);
+              }
+              if(!(p.price>0)) failures.push(p.slug+': invalid price');
+              try{
+                let r=await fetch(p.image,{method:'HEAD',redirect:'follow',headers:{'User-Agent':'Mozilla/5.0'}});
+                if(!r.ok){
+                  r=await fetch(p.image,{method:'GET',redirect:'follow',headers:{'User-Agent':'Mozilla/5.0','Range':'bytes=0-64'}});
+                }
+                const ct=(r.headers.get('content-type')||'').toLowerCase();
+                if(!r.ok || !ct.includes('image')) failures.push(p.slug+': image unavailable '+r.status+' '+ct+' '+p.image);
+                else console.log('IMAGE OK',p.slug,r.status,ct);
+              }catch(e){
+                failures.push(p.slug+': image fetch failed '+e.message);
+              }
+            }
+            if(failures.length){ console.error(failures.join('\n')); process.exit(1); }
+            console.log('CATALOG FIELDS + IMAGES OK:',products.length);
+          })();
+          NODE
+
+      - name: Audit server prices
+        run: |
+          node <<'NODE'
+          const fs=require('fs'),vm=require('vm');
+          const code=fs.readFileSync('dist/novae-public/assets/products.js','utf8');
+          const ctx={}; vm.runInNewContext(code+'\nthis.__PRODUCTS=PRODUCTS;',ctx);
+          (async()=>{
+            for(const p of ctx.__PRODUCTS){
+              const r=await fetch('https://novae-cj-api.midnightmidnightfil.workers.dev/pricing?slug='+encodeURIComponent(p.slug));
+              if(!r.ok) throw new Error(p.slug+' pricing HTTP '+r.status);
+              const d=await r.json();
+              const server=Number(d.priceCad);
+              if(Math.abs(server-Number(p.price))>0.001) throw new Error(p.slug+' price mismatch storefront='+p.price+' server='+server);
+              console.log('PRICE OK',p.slug,server);
+            }
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+
+      - name: Audit CJ availability
+        run: |
+          node <<'NODE'
+          const fs=require('fs'),vm=require('vm');
+          const code=fs.readFileSync('dist/novae-public/assets/products.js','utf8');
+          const ctx={}; vm.runInNewContext(code+'\nthis.__PRODUCTS=PRODUCTS;',ctx);
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          (async()=>{
+            let unavailable=[];
+            for(const p of ctx.__PRODUCTS){
+              const r=await fetch('https://novae-cj-api.midnightmidnightfil.workers.dev/availability?slug='+encodeURIComponent(p.slug));
+              if(!r.ok){ unavailable.push(p.slug+': HTTP '+r.status); continue; }
+              const d=await r.json();
+              console.log('CJ',p.slug,'found='+d.productFound,'stock='+d.inStock,'variant='+(d.variantLabel||''));
+              if(!d.productFound) unavailable.push(p.slug+': product not found');
+              await sleep(1250);
+            }
+            if(unavailable.length) throw new Error(unavailable.join('\n'));
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
